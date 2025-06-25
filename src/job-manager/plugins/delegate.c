@@ -22,6 +22,99 @@
 #include <jansson.h>
 #include <stdint.h>
 
+bool eventlog_entry_validate (json_t *entry)
+{
+    json_t *name;
+    json_t *timestamp;
+    json_t *context;
+
+    if (!json_is_object (entry) || !(name = json_object_get (entry, "name"))
+        || !json_is_string (name) || !(timestamp = json_object_get (entry, "timestamp"))
+        || !json_is_number (timestamp))
+        return false;
+
+    if ((context = json_object_get (entry, "context"))) {
+        if (!json_is_object (context))
+            return false;
+    }
+
+    return true;
+}
+
+static json_t *eventlog_entry_decode (const char *entry)
+{
+    int len;
+    char *ptr;
+    json_t *o;
+
+    if (!entry)
+        goto einval;
+
+    if (!(len = strlen (entry)))
+        goto einval;
+
+    if (entry[len - 1] != '\n')
+        goto einval;
+
+    if (entry[len - 1] != '\n')
+        goto einval;
+
+    ptr = strchr (entry, '\n');
+    if (ptr != &entry[len - 1])
+        goto einval;
+
+    if (!(o = json_loads (entry, JSON_ALLOW_NUL, NULL)))
+        goto einval;
+
+    if (!eventlog_entry_validate (o)) {
+        json_decref (o);
+        goto einval;
+    }
+
+    return o;
+
+einval:
+    errno = EINVAL;
+    return NULL;
+}
+
+static int eventlog_entry_parse (json_t *entry,
+                                 double *timestamp,
+                                 const char **name,
+                                 json_t **context)
+{
+    double t;
+    const char *n;
+    json_t *c;
+
+    if (!entry) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (json_unpack (entry, "{ s:F s:s }", "timestamp", &t, "name", &n) < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!json_unpack (entry, "{ s:o }", "context", &c)) {
+        if (!json_is_object (c)) {
+            errno = EINVAL;
+            return -1;
+        }
+    } else
+        c = NULL;
+
+    if (timestamp)
+        (*timestamp) = t;
+    if (name)
+        (*name) = n;
+    if (context)
+        (*context) = c;
+
+    return 0;
+}
+
 /*
  * Callback firing when job has completed.
  */
@@ -57,6 +150,59 @@ static void wait_callback (flux_future_t *f, void *arg)
 }
 
 /*
+ * Callback firing when events are ready.
+ */
+static void event_callback (flux_future_t *f, void *arg)
+{
+    flux_plugin_t *p = arg;
+    flux_t *h;
+    json_int_t *json_id;
+    flux_jobid_t id;
+    json_t *o = NULL;
+    json_t *context = NULL;
+    const char *name = NULL, *event = NULL;
+    double timestamp;
+
+    if (!(h = flux_future_aux_get (f, "flux::handle"))) {
+        return;
+    }
+    if (!(json_id = flux_future_aux_get (f, "flux::jobid"))) {
+        flux_log_error (h, "could not fetch flux::jobid from future");
+        return;
+    }
+    id = (flux_jobid_t)*json_id;
+    if (flux_job_event_watch_get (f, &event) != 0
+        || !(o = eventlog_entry_decode (event))
+        || eventlog_entry_parse (o, &timestamp, &name, &context) < 0) {
+        json_decref (o);
+        flux_log_error (h, "Error decoding/parsing eventlog entry for %" PRIu64, id);
+        return;
+    }
+    if (!strcmp (name, "start")) {
+        /*  'start' event with no cray_port_distribution event.
+         *  assume cray-pals jobtap plugin is not loaded.
+         */
+        if (flux_jobtap_event_post_pack (p,
+                                         id,
+                                         "delegate::start",
+                                         "{s:f}",
+                                         "timestamp",
+                                         timestamp)
+            < 0) {
+            flux_log_error (h, "could not post delegate::start event for %" PRIu64, id);
+        }
+    }
+
+    if (!strcmp (name, "clean")) {
+        // clean event, no more events needed
+        flux_future_destroy (f);
+    } else {
+        flux_future_reset (f);
+    }
+    return;
+}
+
+/*
  * Callback firing when job has been submitted and ID is ready.
  */
 static void submit_callback (flux_future_t *f, void *arg)
@@ -65,7 +211,7 @@ static void submit_callback (flux_future_t *f, void *arg)
     flux_plugin_t *p = arg;
     json_int_t *orig_id;
     flux_jobid_t delegated_id;
-    flux_future_t *wait_future = NULL;
+    flux_future_t *wait_future = NULL, *event_future = NULL;
     const char *errstr;
 
     if (!(h = flux_jobtap_get_flux (p))) {
@@ -81,9 +227,14 @@ static void submit_callback (flux_future_t *f, void *arg)
         || !(wait_future = flux_job_wait (delegated_h, delegated_id))
         || flux_future_aux_set (wait_future, "flux::jobid", orig_id, NULL) < 0
         || flux_future_then (wait_future, -1, wait_callback, p) < 0
+        || !(event_future =
+                 flux_job_event_watch (delegated_h, delegated_id, "eventlog", 0))
+        || flux_future_aux_set (event_future, "flux::jobid", orig_id, NULL) < 0
+        || flux_future_aux_set (event_future, "flux::handle", h, NULL) < 0
+        || flux_future_then (event_future, -1, event_callback, p) < 0
         || flux_jobtap_event_post_pack (p,
                                         *orig_id,
-                                        "delegated",
+                                        "delegate::submit",
                                         "{s:I}",
                                         "jobid",
                                         (json_int_t)delegated_id)
@@ -97,6 +248,7 @@ static void submit_callback (flux_future_t *f, void *arg)
                         *orig_id);
         flux_jobtap_raise_exception (p, *orig_id, "DelegationFailure", 0, errstr);
         flux_future_destroy (wait_future);
+        flux_future_destroy (event_future);
         flux_future_destroy (f);
         return;
     }
