@@ -11,7 +11,7 @@ jobtapdir = \
     $(fluxlibdir)/job-manager/plugins/
 
 jobtap_LTLIBRARIES = \
-	delegate.la
+	delegate.la \
 	select_and_delegate.la
 
 delegate_la_SOURCES = \
