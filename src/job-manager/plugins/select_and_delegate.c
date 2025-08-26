@@ -396,18 +396,23 @@ static int new_cb (flux_plugin_t *p,
 
     flux_log (h, LOG_INFO, "Entered new_cb\n");
 
-    // const char *env_var_name = "FLUX_DELEGATE_SELECTION_POLICY"; 
+    const char *env_var_name = "FLUX_DELEGATE_SELECTION_POLICY"; 
     // Options are: random, least_jobs_pending, ... 
+    
+
+    flux_shell_t *jt_shell = flux_plugin_get_shell(p); 
+    flux_shell_getenv(jt_shell, "FLUX_DELEGATE_SELECTION_POLICY");
+
     // const char *env_var_name = "PATH"; 
 
     // const char *env_var_val = getenv(env_var_name);
     
-    // if(env_var_val) {
-    //     flux_log(h, LOG_INFO, "%s is set to %s", env_var_name, env_var_val);
-    // }
-    // else {
-    //     flux_log(h, LOG_INFO, "No env var is set\n");
-    // }
+    if(env_var_val) {
+        flux_log(h, LOG_INFO, "%s is set to %s", env_var_name, env_var_val);
+    }
+    else {
+        flux_log(h, LOG_INFO, "No env var is set\n");
+    }
 
     if (!h || !(id = malloc (sizeof (json_int_t)))) {
         return flux_jobtap_reject_job (p,
