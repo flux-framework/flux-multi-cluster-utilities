@@ -366,25 +366,13 @@ static void submit_callback (flux_future_t *f, void *arg)
  * loaded, it would attempt to delegate to itself in an infinite
  * loop.
  */
-static char *remove_dependency_and_encode (json_t *jobspec)
+static char *encode_jobspec (json_t *jobspec)
 {
     char *encoded_jobspec;
-    // json_t *dependency_list = NULL;
 
     if (!(jobspec = json_deep_copy (jobspec))) {
         return NULL;
     }
-    // if (json_unpack (jobspec,
-    //                  "{s:{s:{s:o}}}",
-    //                  "attributes",
-    //                  "system",
-    //                  "dependencies",
-    //                  &dependency_list)
-    //         < 0
-    //     || json_array_clear (dependency_list) < 0) {
-    //     json_decref (jobspec);
-    //     return NULL;
-    // }
     encoded_jobspec = json_dumps (jobspec, 0);
     json_decref (jobspec);
     return encoded_jobspec;
@@ -459,7 +447,7 @@ static int new_cb (flux_plugin_t *p,
     // submit the job to the specified instance and attach a callback for fetching the
     // ID
 
-    if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
+    if (!(encoded_jobspec = encode_jobspec (jobspec))
         || !(jobid_future =
                  flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
