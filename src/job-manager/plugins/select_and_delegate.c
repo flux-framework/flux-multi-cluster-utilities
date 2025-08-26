@@ -21,6 +21,7 @@
 #include <inttypes.h>
 #include <jansson.h>
 #include <stdint.h>
+#include <time.h>
 
 /* Configuration structure */
 typedef struct {
@@ -368,7 +369,7 @@ static void submit_callback (flux_future_t *f, void *arg)
 static char *remove_dependency_and_encode (json_t *jobspec)
 {
     char *encoded_jobspec;
-    json_t *dependency_list = NULL;
+    // json_t *dependency_list = NULL;
 
     if (!(jobspec = json_deep_copy (jobspec))) {
         return NULL;
@@ -428,16 +429,16 @@ static int depend_cb (flux_plugin_t *p,
         }
 
     selected_uri = select_random_cluster(p);
-    flux_log (h, LOG_INFO, "selected id is %" JSON_INTEGER_FORMAT, id);
-    flux_log(h, LOG_INFO, "jobspec is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
+    // flux_log (h, LOG_INFO, "selected id is %" JSON_INTEGER_FORMAT, id);
+    // flux_log(h, LOG_INFO, "jobspec is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
     
     if (!selected_uri) {
         flux_log(h, LOG_ERR, "No URI was selected.");
         return -1;
     }
 
-    if (!(delegated = flux_open (uri, 0))) {
-        flux_log_error (h, "%" JSON_INTEGER_FORMAT ": could not open URI %s", *id, uri);
+    if (!(delegated = flux_open (selected_uri, 0))) {
+        flux_log_error (h, "%" JSON_INTEGER_FORMAT ": could not open URI %s", *id, selected_uri);
         return -1;
     }
 
