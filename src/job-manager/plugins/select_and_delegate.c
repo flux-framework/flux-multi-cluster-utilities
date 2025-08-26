@@ -408,7 +408,7 @@ static int depend_cb (flux_plugin_t *p,
     if (!h || !(id = malloc (sizeof (json_int_t)))) {
         return flux_jobtap_reject_job (p,
                                        args,
-                                       "error processing delegate: %s",
+                                       "error processing select_and_delegate: %s",
                                        flux_plugin_arg_strerror (args));
     }
     if (flux_plugin_arg_unpack (args,
