@@ -393,7 +393,7 @@ static char *remove_dependency_and_encode (json_t *jobspec)
 /*
  * Handle job.dependency.delegate requests
  */
-static int depend_cb (flux_plugin_t *p,
+static int new_cb (flux_plugin_t *p,
                       const char *topic,
                       flux_plugin_arg_t *args,
                       void *arg)
@@ -405,6 +405,8 @@ static int depend_cb (flux_plugin_t *p,
     json_t *jobspec;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
+
+    flux_log (h, LOG_INFO, "Entered new_cb\n");
 
     if (!h || !(id = malloc (sizeof (json_int_t)))) {
         return flux_jobtap_reject_job (p,
@@ -429,7 +431,7 @@ static int depend_cb (flux_plugin_t *p,
         }
 
     selected_uri = select_random_cluster(p);
-    // flux_log (h, LOG_INFO, "selected id is %" JSON_INTEGER_FORMAT, id);
+    // flux_log (h, LOG_INFO, "selected id is %d" JSON_INTEGER_FORMAT, id);
     // flux_log(h, LOG_INFO, "jobspec is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
     
     if (!selected_uri) {
@@ -476,7 +478,7 @@ static int depend_cb (flux_plugin_t *p,
 }
 
 static const struct flux_plugin_handler tab[] = {
-    {"job.state.depend", depend_cb, NULL},
+    {"job.new", new_cb, NULL},
     {0},
 };
 
