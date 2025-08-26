@@ -27,7 +27,7 @@ delegate_la_LIBADD= \
     $(JANSSON_LIBS)
 
 select_and_delegate_la_SOURCES = \
-	select_cluster_and_delegate.c
+	select_and_delegate.c
 
 select_and_delegate_la_LDFLAGS = \
 	$(AM_LDFLAGS) \
