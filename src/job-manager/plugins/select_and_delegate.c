@@ -373,17 +373,17 @@ static char *remove_dependency_and_encode (json_t *jobspec)
     if (!(jobspec = json_deep_copy (jobspec))) {
         return NULL;
     }
-    if (json_unpack (jobspec,
-                     "{s:{s:{s:o}}}",
-                     "attributes",
-                     "system",
-                     "dependencies",
-                     &dependency_list)
-            < 0
-        || json_array_clear (dependency_list) < 0) {
-        json_decref (jobspec);
-        return NULL;
-    }
+    // if (json_unpack (jobspec,
+    //                  "{s:{s:{s:o}}}",
+    //                  "attributes",
+    //                  "system",
+    //                  "dependencies",
+    //                  &dependency_list)
+    //         < 0
+    //     || json_array_clear (dependency_list) < 0) {
+    //     json_decref (jobspec);
+    //     return NULL;
+    // }
     encoded_jobspec = json_dumps (jobspec, 0);
     json_decref (jobspec);
     return encoded_jobspec;
@@ -400,7 +400,7 @@ static int depend_cb (flux_plugin_t *p,
     flux_t *h = flux_jobtap_get_flux (p);
     json_int_t *id;
     flux_t *delegated;
-    const char *uri;
+    const char *selected_uri;
     json_t *jobspec;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
@@ -413,12 +413,9 @@ static int depend_cb (flux_plugin_t *p,
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s:s} s:o}",
+                                "{s:I s:o}",
                                 "id",
                                 id,
-                                "dependency",
-                                "value",
-                                &uri,
                                 "jobspec",
                                 &jobspec)
             < 0
@@ -428,11 +425,22 @@ static int depend_cb (flux_plugin_t *p,
                                        args,
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
+        }
+
+    selected_uri = select_random_cluster(p);
+    flux_log (h, LOG_INFO, "selected id is %" JSON_INTEGER_FORMAT, id);
+    flux_log(h, LOG_INFO, "jobspec is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
+    
+    if (!selected_uri) {
+        flux_log(h, LOG_ERR, "No URI was selected.");
+        return -1;
     }
+
     if (!(delegated = flux_open (uri, 0))) {
         flux_log_error (h, "%" JSON_INTEGER_FORMAT ": could not open URI %s", *id, uri);
         return -1;
     }
+
     if (flux_jobtap_dependency_add (p, *id, "delegated") < 0
         || flux_jobtap_job_aux_set (p,
                                     *id,
@@ -447,6 +455,7 @@ static int depend_cb (flux_plugin_t *p,
     }
     // submit the job to the specified instance and attach a callback for fetching the
     // ID
+
     if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
         || !(jobid_future =
                  flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
@@ -466,7 +475,7 @@ static int depend_cb (flux_plugin_t *p,
 }
 
 static const struct flux_plugin_handler tab[] = {
-    {"job.dependency.delegate", depend_cb, NULL},
+    {"job.state.depend", depend_cb, NULL},
     {0},
 };
 
