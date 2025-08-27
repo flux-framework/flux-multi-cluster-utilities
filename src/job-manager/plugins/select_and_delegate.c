@@ -22,7 +22,7 @@
 #include <jansson.h>
 #include <stdint.h>
 #include <time.h>
-#include<string.h>
+#include <string.h>
 
 /* Configuration structure */
 typedef struct {
@@ -427,7 +427,6 @@ static int new_cb (flux_plugin_t *p,
                                             flux_plugin_arg_strerror (args));
         }
 
-    selected_uri = select_random_cluster(p);
     // flux_log (h, LOG_INFO, "selected id is %d" JSON_INTEGER_FORMAT, id);
     flux_log(h, LOG_INFO, "JOBSPEC is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
 
@@ -440,6 +439,20 @@ static int new_cb (flux_plugin_t *p,
         flux_log(h, LOG_INFO, "%s is set to %s", "FLUX_DELEGATE_SELECTION_POLICY", env_var_val);
     }
     
+    if (strcmp(env_var_val, "least_pending") == 0) {
+        selected_uri = select_random_cluster(p);  
+        // TODO Implement the logic for this use case
+        // selected_uri = select_least_pending_cluster(p);
+    }
+    else if (strcmp(env_var_val, "shortest_match") == 0) {
+        selected_uri = select_random_cluster(p);  
+        // TODO Implement the logic for this use case
+        // selected_uri = select_shortest_match_cluster(p);
+    }
+    else {
+         selected_uri = select_random_cluster(p);     
+    }
+
     if (!selected_uri) {
         flux_log(h, LOG_ERR, "No URI was selected.");
         return -1;
