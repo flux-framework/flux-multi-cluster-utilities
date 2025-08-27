@@ -121,44 +121,72 @@ static const char *select_random_cluster(flux_plugin_t *p)
     return config.uris[index];
 }
 
-static const char *select_shortest_match_cluster(flux_plugin_t *p)
+
+// static const char *select_shortest_match_cluster(flux_plugin_t *p)
+int select_shortest_match_cluster(flux_plugin_t *p)
 {
-//     int rc = -1;
-//     flux_t *fh = flux_jobtap_get_flux(p);
-//     flux_future_t *f = NULL;
+    int rc = -1;
+    flux_t *h = flux_jobtap_get_flux(p);
+    int64_t V, E, J;
+    double load, min, max, avg;
+    flux_future_t *f = NULL;
 
-//     if (!fh) {
-//         errno = EINVAL;
-//         goto out;
-//     }
 
-//     if (!(f = flux_rpc (fh, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
-//         goto out;
-//     }
-//     if ((rc = flux_rpc_get_unpack (f,
-//                                    "{s:I s:I s:f s:I s:f s:f s:f}",
-//                                    "V",
-//                                    &V,
-//                                    "E",
-//                                    &E,
-//                                    "load-time",
-//                                    &load,
-//                                    "njobs",
-//                                    &J,
-//                                    "min-match",
-//                                    &min,
-//                                    "max-match",
-//                                    &max,
-//                                    "avg-match",
-//                                    &avg))
-//         < 0) {
-//         goto out;
-//     }
+    if (!h) {
+        errno = EINVAL;
+        goto out;
+    }
 
-// out:
-//     flux_future_destroy (f);
-//     return rc;
+    if (!(f = flux_rpc (h, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+        flux_log(h,LOG_INFO, "RPC itself failed");
+        goto out;
+    }
+
+    // if (f == NULL){
+    //      flux_log(h,LOG_INFO, "I have a NULL ptr.");
+    // }
+    // else {
+    //      flux_log(h,LOG_INFO, "I DO NOT have a NULL ptr.");
+    // }
+
+    // void* json_str = malloc(sizeof(json_t));
+    // //const void *json_str;
+    // flux_future_get(f, (const void**) &json_str);
+
+
+    // flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_dumps((json_t*)json_str, JSON_INDENT(4)));
+    // //flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_str);
+    
+    if ((rc = flux_rpc_get_unpack (f,
+                                   "{s:I s:I s:f s:I s:f s:f s:f}",
+                                   "V",
+                                   &V,
+                                   "E",
+                                   &E,
+                                   "load-time",
+                                   &load,
+                                   "njobs",
+                                   &J,
+                                   "min-match",
+                                   &min,
+                                   "max-match",
+                                   &max,
+                                   "avg-match",
+                                   &avg))
+        < 0) {
+            
+        flux_log(h,LOG_INFO, "Unpack Failed after RPC!");
+        goto out;
+    }
+
+    flux_log(h,LOG_INFO, "Average Match Time is: %lf",avg);
+
+out:
+    flux_log(h,LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
+    flux_future_destroy (f);
+    return rc;
 }
+
 
 bool eventlog_entry_validate (json_t *entry)
 {
@@ -484,7 +512,8 @@ static int new_cb (flux_plugin_t *p,
         // selected_uri = select_least_pending_cluster(p);
     }
     else if (strcmp(env_var_val, "shortest_match") == 0) {
-        selected_uri = select_shortest_match_cluster(p);  
+        select_shortest_match_cluster(p);  
+        selected_uri = select_random_cluster(p);  
         // TODO Implement the logic for this use case
         // selected_uri = select_shortest_match_cluster(p);
     }
