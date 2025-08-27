@@ -398,9 +398,6 @@ static int new_cb (flux_plugin_t *p,
     flux_log (h, LOG_INFO, "Entered new_cb\n");
 
     char *env_var_val = NULL;
-    // malloc(sizeof(char) * 8192);
-    // env_var_val[0]='\0';
-    
     
     if (!h || !(id = malloc (sizeof (json_int_t)))) {
         return flux_jobtap_reject_job (p,
@@ -438,7 +435,9 @@ static int new_cb (flux_plugin_t *p,
         flux_log(h, LOG_INFO, "%s is set to %s", "FLUX_DELEGATE_SELECTION_POLICY", env_var_val);
     }
     else {
-        flux_log(h, LOG_INFO, "No env var is set\n");
+        env_var_val = "random"; 
+        flux_log(h, LOG_INFO, "No attribute is set by the user. Using random selection as default.\n");
+        flux_log(h, LOG_INFO, "%s is set to %s", "FLUX_DELEGATE_SELECTION_POLICY", env_var_val);
     }
     
     if (!selected_uri) {
