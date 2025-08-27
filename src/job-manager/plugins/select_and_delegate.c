@@ -22,6 +22,7 @@
 #include <jansson.h>
 #include <stdint.h>
 #include <time.h>
+#include<string.h>
 
 /* Configuration structure */
 typedef struct {
@@ -396,44 +397,49 @@ static int new_cb (flux_plugin_t *p,
 
     flux_log (h, LOG_INFO, "Entered new_cb\n");
 
-    // const char *env_var_name = "FLUX_DELEGATE_SELECTION_POLICY"; 
-    // Options are: random, least_jobs_pending, ... 
-
-    // const char *env_var_name = "PATH"; 
-    // const char *env_var_val = getenv(env_var_name);
+    char *env_var_val = NULL;
+    // malloc(sizeof(char) * 8192);
+    // env_var_val[0]='\0';
     
-    // if(env_var_val) {
-    //     flux_log(h, LOG_INFO, "%s is set to %s", env_var_name, env_var_val);
-    // }
-    // else {
-    //     flux_log(h, LOG_INFO, "No env var is set\n");
-    // }
-
+    
     if (!h || !(id = malloc (sizeof (json_int_t)))) {
         return flux_jobtap_reject_job (p,
                                        args,
                                        "error processing select_and_delegate: %s",
                                        flux_plugin_arg_strerror (args));
     }
+
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:o}",
+                                "{s:I s:o s?{s?{s?{s?s}}}}",
                                 "id",
                                 id,
                                 "jobspec",
-                                &jobspec)
+                                &jobspec, 
+                                "jobspec",
+                                    "attributes",
+                                        "system",
+                                            "FLUX_DELEGATE_SELECTION_POLICY",
+                                                &env_var_val)
             < 0
         || flux_jobtap_job_aux_set (p, *id, "flux::jobid", id, free) < 0) {
-        free (id);
-        return flux_jobtap_reject_job (p,
-                                       args,
-                                       "error processing delegate: %s",
-                                       flux_plugin_arg_strerror (args));
+            free (id);
+            return flux_jobtap_reject_job (p,
+                                            args,
+                                            "error processing delegate: %s",
+                                            flux_plugin_arg_strerror (args));
         }
 
     selected_uri = select_random_cluster(p);
     // flux_log (h, LOG_INFO, "selected id is %d" JSON_INTEGER_FORMAT, id);
-    flux_log(h, LOG_INFO, "jobspec is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
+    flux_log(h, LOG_INFO, "JOBSPEC is %s", json_dumps((json_t*) jobspec, JSON_INDENT(4)));
+
+    if(env_var_val) {
+        flux_log(h, LOG_INFO, "%s is set to %s", "FLUX_DELEGATE_SELECTION_POLICY", env_var_val);
+    }
+    else {
+        flux_log(h, LOG_INFO, "No env var is set\n");
+    }
     
     if (!selected_uri) {
         flux_log(h, LOG_ERR, "No URI was selected.");
