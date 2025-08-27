@@ -18,7 +18,6 @@
 
 #include <flux/core.h>
 #include <flux/jobtap.h>
-#include <flux/shell.h>
 #include <inttypes.h>
 #include <jansson.h>
 #include <stdint.h>
