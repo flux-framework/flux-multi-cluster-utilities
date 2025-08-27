@@ -121,6 +121,45 @@ static const char *select_random_cluster(flux_plugin_t *p)
     return config.uris[index];
 }
 
+static const char *select_shortest_match_cluster(flux_plugin_t *p)
+{
+//     int rc = -1;
+//     flux_t *fh = flux_jobtap_get_flux(p);
+//     flux_future_t *f = NULL;
+
+//     if (!fh) {
+//         errno = EINVAL;
+//         goto out;
+//     }
+
+//     if (!(f = flux_rpc (fh, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+//         goto out;
+//     }
+//     if ((rc = flux_rpc_get_unpack (f,
+//                                    "{s:I s:I s:f s:I s:f s:f s:f}",
+//                                    "V",
+//                                    &V,
+//                                    "E",
+//                                    &E,
+//                                    "load-time",
+//                                    &load,
+//                                    "njobs",
+//                                    &J,
+//                                    "min-match",
+//                                    &min,
+//                                    "max-match",
+//                                    &max,
+//                                    "avg-match",
+//                                    &avg))
+//         < 0) {
+//         goto out;
+//     }
+
+// out:
+//     flux_future_destroy (f);
+//     return rc;
+}
+
 bool eventlog_entry_validate (json_t *entry)
 {
     json_t *name;
@@ -445,7 +484,7 @@ static int new_cb (flux_plugin_t *p,
         // selected_uri = select_least_pending_cluster(p);
     }
     else if (strcmp(env_var_val, "shortest_match") == 0) {
-        selected_uri = select_random_cluster(p);  
+        selected_uri = select_shortest_match_cluster(p);  
         // TODO Implement the logic for this use case
         // selected_uri = select_shortest_match_cluster(p);
     }
