@@ -128,7 +128,7 @@ int select_shortest_match_cluster(flux_plugin_t *p)
     int rc = -1;
     flux_t *h = flux_jobtap_get_flux(p);
     int64_t V, E, J;
-    double load, min, max, avg;
+    double load, max, avg;
     flux_future_t *f = NULL;
 
 
@@ -142,37 +142,43 @@ int select_shortest_match_cluster(flux_plugin_t *p)
         goto out;
     }
 
-    // if (f == NULL){
-    //      flux_log(h,LOG_INFO, "I have a NULL ptr.");
-    // }
-    // else {
-    //      flux_log(h,LOG_INFO, "I DO NOT have a NULL ptr.");
-    // }
+    if (f == NULL){
+         flux_log(h,LOG_INFO, "I have a NULL ptr.");
+    }
+    else {
+         flux_log(h,LOG_INFO, "I got not null");
+    }
 
-    // void* json_str = malloc(sizeof(json_t));
-    // //const void *json_str;
-    // flux_future_get(f, (const void**) &json_str);
-
+     void* json_str = malloc(sizeof(json_t));
+    //const void *json_str;
+    int ret = flux_future_get(f, (const void**) &json_str);
+    if(ret == -1) {
+        flux_log(h,LOG_INFO, "==== I got -1 with flux_future_get");
+    }
+    else {
+        flux_log(h,LOG_INFO, "==== flux_future_get payload is non-empty");
+    }
 
     // flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_dumps((json_t*)json_str, JSON_INDENT(4)));
     // //flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_str);
     
     if ((rc = flux_rpc_get_unpack (f,
-                                   "{s:I s:I s:f s:I s:f s:f s:f}",
+                                   "{s:I s:I s:f s?{s?{s?I s?{s?f s?f}}}}",
                                    "V",
                                    &V,
                                    "E",
                                    &E,
                                    "load-time",
                                    &load,
-                                   "njobs",
-                                   &J,
-                                   "min-match",
-                                   &min,
-                                   "max-match",
-                                   &max,
-                                   "avg-match",
-                                   &avg))
+                                   "match",
+                                     "succeeded",     
+                                        "njobs",
+                                        &J,
+                                        "stats",
+                                          "max",
+                                          &max,
+                                          "avg",
+                                          &avg))
         < 0) {
             
         flux_log(h,LOG_INFO, "Unpack Failed after RPC!");
