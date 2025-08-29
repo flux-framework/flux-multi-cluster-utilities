@@ -186,7 +186,7 @@ int select_shortest_match_cluster(flux_plugin_t *p)
     }
 
     flux_log(h,LOG_INFO, "Average Match Time is: %lf",avg);
-
+    return rc;
 out:
     flux_log(h,LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
     flux_future_destroy (f);
