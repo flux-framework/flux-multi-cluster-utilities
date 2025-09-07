@@ -121,7 +121,6 @@ static const char *select_random_cluster(flux_plugin_t *p)
     return config.uris[index];
 }
 
-
 // static const char *select_shortest_match_cluster(flux_plugin_t *p)
 int select_shortest_match_cluster(flux_plugin_t *p)
 {
@@ -191,6 +190,152 @@ out:
     flux_log(h,LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
     flux_future_destroy (f);
     return rc;
+}
+
+// static const char *select_least_pending_cluster(flux_plugin_t *p)
+static const char *select_least_pending_cluster(flux_plugin_t *p)
+{
+    int rc = -1;
+    flux_t *h = flux_jobtap_get_flux(p);
+    int64_t pending_jobs;
+    json_t *running_queues = NULL;
+    int *pending_count = NULL;
+    //int64_t V, E, J;
+    //double load, max, avg;
+    const char *queue_uri;
+    flux_future_t *f = NULL;
+
+
+    //------------------------------------------
+    // Approach: We can do this in one of two ways. 
+    //           Approach A is static. Approach B is dynamic:   
+    //     A. We already have the configs with URIs of each cluster at plugin load
+    //        We iterate over each URI, try to get the pending jobs for each and pick the one with the least.
+    //     B. We query the cluster manager to get queue ID for each cluster, try to query pending jobs for each
+    //        and make a decision based on that. Not sure which one is easiest to implement, so attempting both
+    //        for reference. We can pick whichever works first, followed by whichever is most stable.
+
+    if (!h) {
+        errno = EINVAL;
+        goto out;
+    }
+
+    if (!(f = flux_rpc (h, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+        flux_log(h,LOG_INFO, "sched-fluxion-qmanager.stats-get RPC failed");
+        goto out;
+    } 
+    else {
+         flux_log(h,LOG_INFO, "f from RPC call is not null");
+    }
+
+     void* json_str = malloc(sizeof(json_t));
+    //const void *json_str;
+    int ret = flux_future_get(f, (const void**) &json_str);
+    if(ret == -1) {
+        flux_log(h,LOG_INFO, "==== I got -1 with flux_future_get");
+    }
+    else {
+        flux_log(h,LOG_INFO, "==== flux_future_get payload is non-empty");
+    }
+
+    // flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_dumps((json_t*)json_str, JSON_INDENT(4)));
+    // //flux_log(h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_str);
+    
+    if ((rc = flux_rpc_get_unpack (f,
+                                   "{s?{s?{s?{s?I} s?{s?o}}}}",
+                                   "queues",
+                                     "default",
+                                       "action_counts",
+                                         "pending",
+                                         &pending_jobs,
+                                        "scheduled_queues",
+                                          "running",
+                                            &running_queues
+                                        ))                                         
+        < 0) {
+            
+        flux_log(h,LOG_INFO, "Unpack Failed after RPC!");
+        goto out;
+    }
+
+    //pending jobs at top level instance is useless, but keeping it here for reference
+    flux_log(h,LOG_INFO, "Pending job count is: %ld", pending_jobs);
+    flux_log(h, LOG_INFO, "Running queues are %s", json_dumps((json_t*) running_queues, JSON_INDENT(4)));
+
+    // Approach A: Statically iterate over URIs of clusters. Try to query pending jobs
+    
+    if (config.count == 0) {
+        flux_log(h, LOG_ERR, "No clusters available");
+        goto out;
+    }
+    
+    pending_count = (int *) malloc(config.count * sizeof(int));
+    int ind_iter;
+    for(ind_iter = 0; ind_iter < config.count; ind_iter++) {
+        flux_log(h, LOG_DEBUG, "Selecting cluster %d: %s", 
+                 ind_iter, config.uris[ind_iter]);
+        queue_uri = config.uris[ind_iter];
+        flux_log(h, LOG_DEBUG, "Querying pending jobs for cluster %d: %s", 
+                 ind_iter, config.uris[ind_iter]);
+        
+        flux_t *h1 = flux_open(queue_uri, 0);
+        if (!h1) {
+            flux_log(h, LOG_ERR, "Failed to open flux instance for cluster %d: %s",
+                     ind_iter, queue_uri);
+            continue;
+        }
+
+        flux_future_t *f1 = flux_rpc(h1, "sched-fluxion-qmanager.stats-get", NULL,
+                                      FLUX_NODEID_ANY, 0);
+        if (!f1) {
+            flux_log(h, LOG_ERR, "Failed to send RPC for cluster %d: %s",
+                     ind_iter, queue_uri);
+            flux_close(h1);
+            continue;
+        }
+
+        if ((rc = flux_rpc_get_unpack (f1,
+                                   "{s?{s?{s?{s?I} s?{s?o}}}}",
+                                   "queues",
+                                     "default",
+                                       "action_counts",
+                                         "pending",
+                                         &pending_jobs,
+                                        "scheduled_queues",
+                                          "running",
+                                            &running_queues
+                                        ))                                         
+        < 0) {
+            
+            flux_log(h,LOG_INFO, "Unpack Failed after RPC!");
+            goto out;
+        } 
+        flux_log(h,LOG_INFO, "Queue URI: %s\nPending job count is: %ld", queue_uri, pending_jobs);
+        pending_count[ind_iter] = pending_jobs;
+        //flux_log(h, LOG_INFO, "Pending job count: %ld Running queues are %s", json_dumps((json_t*) running_queues, JSON_INDENT(4)));
+        // Process the response from the RPC call
+        // ...
+
+        flux_close(h1);
+    }
+
+    // Pick the index with least pending job count
+    int least_index = 0;
+    int min_pending = 9999999;
+    for(ind_iter = 0; ind_iter < config.count; ind_iter++) {
+        if(min_pending >= pending_count[ind_iter]) {
+            least_index = ind_iter;
+            min_pending = pending_count[ind_iter];
+        }
+    } 
+    free(pending_count);
+    flux_log(h,LOG_INFO, "Queue %s has least no. of jobs %d", config.uris[least_index], min_pending);
+
+    return config.uris[least_index];
+out:
+    flux_log(h,LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
+    flux_future_destroy (f);
+    return NULL;
 }
 
 
@@ -513,7 +658,8 @@ static int new_cb (flux_plugin_t *p,
     }
     
     if (strcmp(env_var_val, "least_pending") == 0) {
-        selected_uri = select_random_cluster(p);  
+        selected_uri = select_least_pending_cluster(p);
+        //selected_uri = select_random_cluster(p);  
         // TODO Implement the logic for this use case
         // selected_uri = select_least_pending_cluster(p);
     }
