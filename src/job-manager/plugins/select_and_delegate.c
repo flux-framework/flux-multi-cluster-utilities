@@ -122,13 +122,15 @@ static const char *select_random_cluster(flux_plugin_t *p)
 }
 
 // static const char *select_shortest_match_cluster(flux_plugin_t *p)
-int select_shortest_match_cluster(flux_plugin_t *p)
+static const char *select_shortest_match_cluster(flux_plugin_t *p)
 {
     int rc = -1;
     flux_t *h = flux_jobtap_get_flux(p);
     int64_t V, E, J;
     double load, max, avg;
     flux_future_t *f = NULL;
+    double *shortest_count;
+    const char *queue_uri;
 
 
     if (!h) {
@@ -185,11 +187,88 @@ int select_shortest_match_cluster(flux_plugin_t *p)
     }
 
     flux_log(h,LOG_INFO, "Average Match Time is: %lf",avg);
-    return rc;
+
+    // Approach A: Statically iterate over URIs of clusters. Query match times and pick the URI with least max match time
+    
+    if (config.count == 0) {
+        flux_log(h, LOG_ERR, "No clusters available");
+        goto out;
+    }
+    
+    shortest_count = (double *) malloc(config.count * sizeof(double));
+    int ind_iter;
+    for(ind_iter = 0; ind_iter < config.count; ind_iter++) {
+        flux_log(h, LOG_DEBUG, "Selecting cluster %d: %s", 
+                 ind_iter, config.uris[ind_iter]);
+        queue_uri = config.uris[ind_iter];
+        flux_log(h, LOG_DEBUG, "Querying match time for cluster %d: %s", 
+                 ind_iter, config.uris[ind_iter]);
+        
+        flux_t *h1 = flux_open(queue_uri, 0);
+        if (!h1) {
+            flux_log(h, LOG_ERR, "Failed to open flux instance for cluster %d: %s",
+                     ind_iter, queue_uri);
+            continue;
+        }
+
+        flux_future_t *f1 = flux_rpc(h1, "sched-fluxion-resource.stats-get", NULL,
+                                      FLUX_NODEID_ANY, 0);
+        if (!f1) {
+            flux_log(h, LOG_ERR, "Failed to send RPC for cluster %d: %s",
+                     ind_iter, queue_uri);
+            flux_close(h1);
+            continue;
+        }
+
+        if ((rc = flux_rpc_get_unpack (f,
+                                   "{s:I s:I s:f s?{s?{s?I s?{s?f s?f}}}}",
+                                   "V",
+                                   &V,
+                                   "E",
+                                   &E,
+                                   "load-time",
+                                   &load,
+                                   "match",
+                                     "succeeded",     
+                                        "njobs",
+                                        &J,
+                                        "stats",
+                                          "max",
+                                          &max,
+                                          "avg",
+                                          &avg))
+                < 0) {
+            
+            flux_log(h,LOG_INFO, "Unpack Failed after RPC!");
+            goto out;
+        }
+        flux_log(h,LOG_INFO, "Queue URI: %s\nMax match time is: %lf", queue_uri, max);
+        shortest_count[ind_iter] = max;
+        //flux_log(h, LOG_INFO, "Pending job count: %ld Running queues are %s", json_dumps((json_t*) running_queues, JSON_INDENT(4)));
+        // Process the response from the RPC call
+        // ...
+
+        flux_close(h1);
+    }
+
+    // Pick the index with least pending job count
+    int least_index = 0;
+    double max_match = 999999999.9999f;
+    for(ind_iter = 0; ind_iter < config.count; ind_iter++) {
+        if(max_match >= shortest_count[ind_iter]) {
+            least_index = ind_iter;
+            max_match = shortest_count[ind_iter];
+        }
+    } 
+    free(shortest_count);
+    flux_log(h,LOG_INFO, "Queue %s has shortest max match time of %lf", config.uris[least_index], max_match);
+
+    return config.uris[least_index];
+
 out:
     flux_log(h,LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
     flux_future_destroy (f);
-    return rc;
+    return NULL;
 }
 
 // static const char *select_least_pending_cluster(flux_plugin_t *p)
@@ -664,8 +743,8 @@ static int new_cb (flux_plugin_t *p,
         // selected_uri = select_least_pending_cluster(p);
     }
     else if (strcmp(env_var_val, "shortest_match") == 0) {
-        select_shortest_match_cluster(p);  
-        selected_uri = select_random_cluster(p);  
+        selected_uri = select_shortest_match_cluster(p);  
+        //selected_uri = select_random_cluster(p);  
         // TODO Implement the logic for this use case
         // selected_uri = select_shortest_match_cluster(p);
     }
