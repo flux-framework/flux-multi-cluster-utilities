@@ -137,15 +137,19 @@ static void wait_callback (flux_future_t *f, void *arg)
         return;
     }
     if (success) {
-        flux_jobtap_raise_exception (p, *id, "DelegationSuccess", 0, "");
-    } else {
-        flux_jobtap_raise_exception (p,
-                                     *id,
-                                     "DelegationFailure",
-                                     0,
-                                     "errstr %s",
-                                     errstr);
+        if (flux_jobtap_dependency_remove (p, *id, "delegated") < 0) {
+            errstr = "failed to remove dependency";
+        } else {
+            flux_future_destroy (f);
+            return;
+        }
     }
+    flux_jobtap_raise_exception (p,
+                                 *id,
+                                 "DelegationFailure",
+                                 0,
+                                 "errstr %s",
+                                 errstr);
     flux_future_destroy (f);
 }
 
@@ -368,8 +372,36 @@ static int depend_cb (flux_plugin_t *p,
     return 0;
 }
 
+static int sched_cb (flux_plugin_t *p,
+                     const char *topic,
+                     flux_plugin_arg_t *args,
+                     void *arg)
+{
+    flux_t *h = flux_jobtap_get_flux (p);
+    if (!h)
+        return -1;
+    flux_log (h, LOG_DEBUG, "in delegate sched_cb");
+    return 0;
+}
+
+
+static int run_cb (flux_plugin_t *p,
+                   const char *topic,
+                   flux_plugin_arg_t *args,
+                   void *arg)
+{
+    flux_t *h = flux_jobtap_get_flux (p);
+    if (!h)
+        return -1;
+    flux_log (h, LOG_DEBUG, "in delegate run_cb");
+    return 0;
+}
+
+
 static const struct flux_plugin_handler tab[] = {
     {"job.dependency.delegate", depend_cb, NULL},
+    {"job.state.sched", sched_cb, NULL},
+    {"job.state.run", run_cb, NULL},
     {0},
 };
 
