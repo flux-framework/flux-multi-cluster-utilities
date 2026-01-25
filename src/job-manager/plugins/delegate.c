@@ -500,19 +500,65 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
     return 0;
 }
 
-
-static int run_cb (flux_plugin_t *p,
-                   const char *topic,
-                   flux_plugin_arg_t *args,
-                   void *arg)
+/*
+ * job.state.run callback. Sends `job-exec.override` RPCs to make the job skip
+ * execution, since execution is handled by another Flux instance.
+ */
+static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
+    flux_jobid_t job_id;
+    flux_future_t *run_future;
+
     if (!h)
         return -1;
-    flux_log (h, LOG_DEBUG, "in delegate run_cb");
+
+    if (!flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate::jobid"))
+        return 0;
+
+    if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:I}", "id", &job_id) < 0) {
+        flux_jobtap_raise_exception (p,
+                                     FLUX_JOBTAP_CURRENT_JOB,
+                                     "alloc",
+                                     0,
+                                     "delegate: unpack: %s",
+                                     flux_plugin_arg_strerror (args));
+        flux_log_error (h, "flux_plugin_arg_unpack");
+        return -1;
+    }
+    // send `job-exec.override` start and finish events. TODO: check the RPC return status
+    // and handle errors.
+    if (!(run_future = flux_rpc_pack (h,
+                                      "job-exec.override",
+                                      FLUX_NODEID_ANY,
+                                      0,
+                                      "{s:s s:I}",
+                                      "event",
+                                      "start",
+                                      "jobid",
+                                      (json_int_t)job_id))) {
+        flux_log_error (h, "flux_rpc_pack failed for %s job-exec.override: start", idf58 (job_id));
+        return -1;
+    }
+    flux_future_destroy (run_future);
+    if (!(run_future = flux_rpc_pack (h,
+                                      "job-exec.override",
+                                      FLUX_NODEID_ANY,
+                                      0,
+                                      "{s:s s:I}",
+                                      "event",
+                                      "finish",
+                                      "jobid",
+                                      (json_int_t)job_id))) {
+        flux_log_error (h,
+                        "flux_rpc_pack failed for %s in job-exec.override: finish",
+                        idf58 (job_id));
+        return -1;
+    }
+    flux_future_destroy (run_future);
+
     return 0;
 }
-
 
 static const struct flux_plugin_handler tab[] = {
     {"job.dependency.delegate", depend_cb, NULL},
