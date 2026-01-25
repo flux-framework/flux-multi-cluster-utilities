@@ -19,6 +19,8 @@
 #include <inttypes.h>
 #include <jansson.h>
 #include <stdint.h>
+#include <limits.h>
+#include <unistd.h>
 
 #include <flux/core.h>
 #include <flux/jobtap.h>
@@ -367,15 +369,134 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     return 0;
 }
 
-static int sched_cb (flux_plugin_t *p,
-                     const char *topic,
-                     flux_plugin_arg_t *args,
-                     void *arg)
+/*
+ * Continuation callback, invoked when alloc-bypass R has been committed
+ * to the KVS.
+ *
+ * Post the alloc (bypass: true) event for the job.
+ */
+static void alloc_continuation (flux_future_t *f, void *arg)
+{
+    flux_plugin_t *p = arg;
+    flux_jobid_t *id;
+
+    flux_t *h = flux_jobtap_get_flux (p);
+
+    if (!f || !(id = flux_future_aux_get (f, "flux::jobid"))) {
+        flux_log_error (h, "alloc_continuation: failed to get jobid from future");
+        goto done;
+    }
+
+    if (flux_future_get (f, NULL) < 0) {
+        flux_log_error (h, "alloc_continuation: flux_future_get failed for %s", idf58 (*id));
+
+        flux_jobtap_raise_exception (p,
+                                     *id,
+                                     "alloc",
+                                     0,
+                                     "failed to commit R to kvs: %s",
+                                     strerror (errno));
+        goto done;
+    }
+
+    if (flux_jobtap_event_post_pack (p, *id, "alloc", "{s:b}", "bypass", true) < 0) {
+        flux_log_error (h, "alloc_continuation: flux_jobtap_event_post_pack for %s", idf58 (*id));
+        flux_jobtap_raise_exception (p,
+                                     *id,
+                                     "alloc",
+                                     0,
+                                     "failed to post alloc event: %s",
+                                     strerror (errno));
+        goto done;
+    }
+
+done:
+    flux_future_destroy (f);
+}
+
+/*
+ * job.state.sched callback. Generates an alloc-bypass R for the job and passes it to the
+ * job manager. Then starts a KVS transaction to post the R to the KVS. Once that is
+ * complete, the `alloc` event should be posted, but that is handled asynchronously.
+ */
+static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
     if (!h)
         return -1;
-    flux_log (h, LOG_DEBUG, "in delegate sched_cb");
+    flux_jobid_t *id;
+    flux_jobid_t job_id;
+    flux_kvs_txn_t *txn = NULL;
+    json_t *R = NULL;
+    char key[256];
+    char hostname[HOST_NAME_MAX + 1];
+    flux_future_t *alloc_future = NULL;
+
+    if (!(id = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate::jobid")))
+        return 0;
+
+    if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:I}", "id", &job_id) < 0
+        || gethostname (hostname, sizeof (hostname)) < 0) {
+        flux_jobtap_raise_exception (p,
+                                     FLUX_JOBTAP_CURRENT_JOB,
+                                     "alloc",
+                                     0,
+                                     "delegate: unpack: %s",
+                                     flux_plugin_arg_strerror (args));
+        flux_log_error (h, "flux_plugin_arg_unpack for %s", idf58 (job_id));
+        return -1;
+    }
+    // Create a fake R without properties
+    if (!(R = json_pack ("{s:i s:{s:[{s:s s:{s:s}}] s:f s:f s:[s]}}",
+                         "version",
+                         1,
+                         "execution",
+                         "R_lite",
+                         "rank",
+                         "0",
+                         "children",
+                         "core",
+                         "0",
+                         "starttime",
+                         0.0,
+                         "expiration",
+                         0.0,
+                         "nodelist",
+                         hostname))
+        || flux_plugin_arg_pack (args, FLUX_PLUGIN_ARG_OUT, "{s:O}", "R", R) < 0) {
+        json_decref (R);
+        flux_log_error (h, "failed to output fake R for %s", idf58 (job_id));
+        return flux_jobtap_raise_exception (p,
+                                            job_id,
+                                            "alloc",
+                                            0,
+                                            "failed to post alloc event: %s",
+                                            strerror (errno));
+    }
+    // Create KVS transaction posting the R
+    if (!(txn = flux_kvs_txn_create ()) || flux_job_kvs_key (key, sizeof (key), job_id, "R") < 0
+        || flux_kvs_txn_pack (txn, 0, key, "O", R) < 0
+        || !(alloc_future = flux_kvs_commit (h, NULL, 0, txn))
+        || flux_future_then (alloc_future, -1, alloc_continuation, p) < 0) {
+        flux_log_error (h, "failed processing R KVS transaction");
+        flux_kvs_txn_destroy (txn);
+        flux_future_destroy (alloc_future);
+        json_decref (R);
+        return flux_jobtap_raise_exception (p,
+                                            job_id,
+                                            "alloc",
+                                            0,
+                                            "failed to post alloc event: %s",
+                                            strerror (errno));
+    }
+    json_decref (R);
+    flux_kvs_txn_destroy (txn);
+    if (flux_future_aux_set (alloc_future, "flux::jobid", id, NULL) < 0) {
+        flux_future_destroy (alloc_future);
+        return flux_jobtap_raise_exception (p, job_id, "alloc", 0, "flux_future_aux_set");
+    }
+    *id = job_id;
+
     return 0;
 }
 
