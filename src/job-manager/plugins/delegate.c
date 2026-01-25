@@ -16,11 +16,27 @@
 #include "config.h"
 #endif
 
-#include <flux/core.h>
-#include <flux/jobtap.h>
 #include <inttypes.h>
 #include <jansson.h>
 #include <stdint.h>
+
+#include <flux/core.h>
+#include <flux/jobtap.h>
+
+/*  Convenience function to convert a flux_jobid_t to F58 encoding
+ *  If the encode fails (unlikely), then the decimal encoding is returned.
+ */
+static inline const char *idf58 (flux_jobid_t id)
+{
+    static __thread char buf[21];
+    if (flux_job_id_encode (id, "f58", buf, sizeof (buf)) < 0) {
+        /* 64bit integer is guaranteed to fit in 21 bytes
+         * floor(log(2^64-1)/log(1)) + 1 = 20
+         */
+        (void)sprintf (buf, "%ju", (uintmax_t)id);
+    }
+    return buf;
+}
 
 bool eventlog_entry_validate (json_t *entry)
 {
@@ -173,7 +189,7 @@ static void event_callback (flux_future_t *f, void *arg)
     if (flux_job_event_watch_get (f, &event) != 0 || !(o = eventlog_entry_decode (event))
         || eventlog_entry_parse (o, &timestamp, &name, &context) < 0) {
         json_decref (o);
-        flux_log_error (h, "Error decoding/parsing eventlog entry for %" PRIu64, id);
+        flux_log_error (h, "Error decoding/parsing eventlog entry for %s", idf58 (id));
         return;
     }
     if (!strcmp (name, "start")) {
@@ -182,7 +198,7 @@ static void event_callback (flux_future_t *f, void *arg)
          */
         if (flux_jobtap_event_post_pack (p, id, "delegate::start", "{s:f}", "timestamp", timestamp)
             < 0) {
-            flux_log_error (h, "could not post delegate::start event for %" PRIu64, id);
+            flux_log_error (h, "could not post delegate::start event for %s", idf58 (id));
         }
     }
 
@@ -233,10 +249,7 @@ static void submit_callback (flux_future_t *f, void *arg)
         if (!(errstr = flux_future_error_string (f))) {
             errstr = "";
         }
-        flux_log_error (h,
-                        "%" JSON_INTEGER_FORMAT
-                        ": submission to specified Flux instance failed",
-                        *orig_id);
+        flux_log_error (h, "%s: submission to specified Flux instance failed", idf58 (*orig_id));
         flux_jobtap_raise_exception (p, *orig_id, "DelegationFailure", 0, errstr);
         flux_future_destroy (wait_future);
         flux_future_destroy (event_future);
@@ -321,7 +334,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                        flux_plugin_arg_strerror (args));
     }
     if (!(delegated = flux_open (uri, 0))) {
-        flux_log_error (h, "%" JSON_INTEGER_FORMAT ": could not open URI %s", *id, uri);
+        flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
         return -1;
     }
     if (flux_jobtap_dependency_add (p, *id, "delegated") < 0
@@ -332,7 +345,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                     (flux_free_f)flux_close)
                < 0
         || flux_set_reactor (delegated, flux_get_reactor (h)) < 0) {
-        flux_log_error (h, "%" JSON_INTEGER_FORMAT ": flux_jobtap_dependency_add", *id);
+        flux_log_error (h, "%s: flux_jobtap_dependency_add", idf58 (*id));
         flux_close (delegated);
         return -1;
     }
@@ -343,10 +356,9 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {
         flux_log_error (h,
-                        "%" JSON_INTEGER_FORMAT
-                        ": could not delegate job to specified Flux "
+                        "%s: could not delegate job to specified Flux "
                         "instance",
-                        *id);
+                        idf58 (*id));
         flux_future_destroy (jobid_future);
         free (encoded_jobspec);
         return -1;
