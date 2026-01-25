@@ -144,12 +144,7 @@ static void wait_callback (flux_future_t *f, void *arg)
             return;
         }
     }
-    flux_jobtap_raise_exception (p,
-                                 *id,
-                                 "DelegationFailure",
-                                 0,
-                                 "errstr %s",
-                                 errstr);
+    flux_jobtap_raise_exception (p, *id, "DelegationFailure", 0, "errstr %s", errstr);
     flux_future_destroy (f);
 }
 
@@ -175,8 +170,7 @@ static void event_callback (flux_future_t *f, void *arg)
         return;
     }
     id = (flux_jobid_t)*json_id;
-    if (flux_job_event_watch_get (f, &event) != 0
-        || !(o = eventlog_entry_decode (event))
+    if (flux_job_event_watch_get (f, &event) != 0 || !(o = eventlog_entry_decode (event))
         || eventlog_entry_parse (o, &timestamp, &name, &context) < 0) {
         json_decref (o);
         flux_log_error (h, "Error decoding/parsing eventlog entry for %" PRIu64, id);
@@ -186,12 +180,7 @@ static void event_callback (flux_future_t *f, void *arg)
         /*  'start' event with no cray_port_distribution event.
          *  assume cray-pals jobtap plugin is not loaded.
          */
-        if (flux_jobtap_event_post_pack (p,
-                                         id,
-                                         "delegate::start",
-                                         "{s:f}",
-                                         "timestamp",
-                                         timestamp)
+        if (flux_jobtap_event_post_pack (p, id, "delegate::start", "{s:f}", "timestamp", timestamp)
             < 0) {
             flux_log_error (h, "could not post delegate::start event for %" PRIu64, id);
         }
@@ -226,13 +215,11 @@ static void submit_callback (flux_future_t *f, void *arg)
         flux_future_destroy (f);
         return;
     }
-    if (!(delegated_h = flux_future_get_flux (f))
-        || flux_job_submit_get_id (f, &delegated_id) < 0
+    if (!(delegated_h = flux_future_get_flux (f)) || flux_job_submit_get_id (f, &delegated_id) < 0
         || !(wait_future = flux_job_wait (delegated_h, delegated_id))
         || flux_future_aux_set (wait_future, "flux::jobid", orig_id, NULL) < 0
         || flux_future_then (wait_future, -1, wait_callback, p) < 0
-        || !(event_future =
-                 flux_job_event_watch (delegated_h, delegated_id, "eventlog", 0))
+        || !(event_future = flux_job_event_watch (delegated_h, delegated_id, "eventlog", 0))
         || flux_future_aux_set (event_future, "flux::jobid", orig_id, NULL) < 0
         || flux_future_aux_set (event_future, "flux::handle", h, NULL) < 0
         || flux_future_then (event_future, -1, event_callback, p) < 0
@@ -299,10 +286,7 @@ static char *remove_dependency_and_encode (json_t *jobspec)
 /*
  * Handle job.dependency.delegate requests
  */
-static int depend_cb (flux_plugin_t *p,
-                      const char *topic,
-                      flux_plugin_arg_t *args,
-                      void *arg)
+static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
     json_int_t *id;
@@ -355,8 +339,7 @@ static int depend_cb (flux_plugin_t *p,
     // submit the job to the specified instance and attach a callback for fetching the
     // ID
     if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
-        || !(jobid_future =
-                 flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
+        || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {
         flux_log_error (h,
