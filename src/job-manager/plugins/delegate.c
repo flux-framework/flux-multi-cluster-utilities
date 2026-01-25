@@ -326,7 +326,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                 "jobspec",
                                 &jobspec)
             < 0
-        || flux_jobtap_job_aux_set (p, *id, "flux::jobid", id, free) < 0) {
+        || flux_jobtap_job_aux_set (p, *id, "flux::delegate::jobid", id, free) < 0) {
         free (id);
         return flux_jobtap_reject_job (p,
                                        args,
