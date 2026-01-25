@@ -353,6 +353,15 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     }
     // submit the job to the specified instance and attach a callback for fetching the
     // ID
+    if (flux_jobtap_job_set_flag (p, FLUX_JOBTAP_CURRENT_JOB, "alloc-bypass") < 0) {
+        flux_jobtap_raise_exception (p,
+                                     FLUX_JOBTAP_CURRENT_JOB,
+                                     "alloc",
+                                     0,
+                                     "Failed to set alloc-bypass: %s",
+                                     strerror (errno));
+        return -1;
+    }
     if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
         || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
