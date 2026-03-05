@@ -139,7 +139,7 @@ static int eventlog_entry_parse (json_t *entry,
 static void wait_callback (flux_future_t *f, void *arg)
 {
     flux_plugin_t *p = arg;
-    json_int_t *id;
+    flux_jobid_t *id;
     bool success;
     const char *errstr;
 
@@ -173,8 +173,7 @@ static void event_callback (flux_future_t *f, void *arg)
 {
     flux_plugin_t *p = arg;
     flux_t *h;
-    json_int_t *json_id;
-    flux_jobid_t id;
+    flux_jobid_t *id;
     json_t *o = NULL;
     json_t *context = NULL;
     const char *name = NULL, *event = NULL;
@@ -183,24 +182,23 @@ static void event_callback (flux_future_t *f, void *arg)
     if (!(h = flux_future_aux_get (f, "flux::handle"))) {
         return;
     }
-    if (!(json_id = flux_future_aux_get (f, "flux::jobid"))) {
+    if (!(id = flux_future_aux_get (f, "flux::jobid"))) {
         flux_log_error (h, "could not fetch flux::jobid from future");
         return;
     }
-    id = (flux_jobid_t)*json_id;
     if (flux_job_event_watch_get (f, &event) != 0 || !(o = eventlog_entry_decode (event))
         || eventlog_entry_parse (o, &timestamp, &name, &context) < 0) {
         json_decref (o);
-        flux_log_error (h, "Error decoding/parsing eventlog entry for %s", idf58 (id));
+        flux_log_error (h, "Error decoding/parsing eventlog entry for %s", idf58 (*id));
         return;
     }
     if (!strcmp (name, "start")) {
         /*  'start' event with no cray_port_distribution event.
          *  assume cray-pals jobtap plugin is not loaded.
          */
-        if (flux_jobtap_event_post_pack (p, id, "delegate::start", "{s:f}", "timestamp", timestamp)
+        if (flux_jobtap_event_post_pack (p, *id, "delegate::start", "{s:f}", "timestamp", timestamp)
             < 0) {
-            flux_log_error (h, "could not post delegate::start event for %s", idf58 (id));
+            flux_log_error (h, "could not post delegate::start event for %s", idf58 (*id));
         }
     }
 
@@ -220,8 +218,7 @@ static void submit_callback (flux_future_t *f, void *arg)
 {
     flux_t *h, *delegated_h;
     flux_plugin_t *p = arg;
-    json_int_t *orig_id;
-    flux_jobid_t delegated_id;
+    flux_jobid_t delegated_id, *orig_id;
     flux_future_t *wait_future = NULL, *event_future = NULL;
     const char *errstr;
 
@@ -246,7 +243,7 @@ static void submit_callback (flux_future_t *f, void *arg)
                                         "delegate::submit",
                                         "{s:I}",
                                         "jobid",
-                                        (json_int_t)delegated_id)
+                                        delegated_id)
                < 0) {
         if (!(errstr = flux_future_error_string (f))) {
             errstr = "";
@@ -304,14 +301,14 @@ static char *remove_dependency_and_encode (json_t *jobspec)
 static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
-    json_int_t *id;
+    flux_jobid_t *id;
     flux_t *delegated;
     const char *uri;
     json_t *jobspec;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
 
-    if (!h || !(id = malloc (sizeof (json_int_t)))) {
+    if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
         return flux_jobtap_reject_job (p,
                                        args,
                                        "error processing delegate: %s",
@@ -434,7 +431,6 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
     if (!h)
         return -1;
     flux_jobid_t *id;
-    flux_jobid_t job_id;
     flux_kvs_txn_t *txn = NULL;
     json_t *R = NULL;
     char key[256];
@@ -444,15 +440,14 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
     if (!(id = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate::jobid")))
         return 0;
 
-    if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:I}", "id", &job_id) < 0
-        || gethostname (hostname, sizeof (hostname)) < 0) {
+    if (gethostname (hostname, sizeof (hostname)) < 0) {
         flux_jobtap_raise_exception (p,
                                      FLUX_JOBTAP_CURRENT_JOB,
                                      "alloc",
                                      0,
-                                     "delegate: unpack: %s",
+                                     "delegate: gethostname: %s",
                                      flux_plugin_arg_strerror (args));
-        flux_log_error (h, "flux_plugin_arg_unpack for %s", idf58 (job_id));
+        flux_log_error (h, "gethostname for %s", idf58 (*id));
         return -1;
     }
     // Create a fake R without properties
@@ -474,16 +469,16 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
                          hostname))
         || flux_plugin_arg_pack (args, FLUX_PLUGIN_ARG_OUT, "{s:O}", "R", R) < 0) {
         json_decref (R);
-        flux_log_error (h, "failed to output fake R for %s", idf58 (job_id));
+        flux_log_error (h, "failed to output fake R for %s", idf58 (*id));
         return flux_jobtap_raise_exception (p,
-                                            job_id,
+                                            *id,
                                             "alloc",
                                             0,
                                             "failed to post alloc event: %s",
                                             strerror (errno));
     }
     // Create KVS transaction posting the R
-    if (!(txn = flux_kvs_txn_create ()) || flux_job_kvs_key (key, sizeof (key), job_id, "R") < 0
+    if (!(txn = flux_kvs_txn_create ()) || flux_job_kvs_key (key, sizeof (key), *id, "R") < 0
         || flux_kvs_txn_pack (txn, 0, key, "O", R) < 0
         || !(alloc_future = flux_kvs_commit (h, NULL, 0, txn))
         || flux_future_then (alloc_future, -1, alloc_continuation, p) < 0) {
@@ -492,7 +487,7 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
         flux_future_destroy (alloc_future);
         json_decref (R);
         return flux_jobtap_raise_exception (p,
-                                            job_id,
+                                            *id,
                                             "alloc",
                                             0,
                                             "failed to post alloc event: %s",
@@ -502,9 +497,8 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
     flux_kvs_txn_destroy (txn);
     if (flux_future_aux_set (alloc_future, "flux::jobid", id, NULL) < 0) {
         flux_future_destroy (alloc_future);
-        return flux_jobtap_raise_exception (p, job_id, "alloc", 0, "flux_future_aux_set");
+        return flux_jobtap_raise_exception (p, *id, "alloc", 0, "flux_future_aux_set");
     }
-    *id = job_id;
 
     return 0;
 }
@@ -545,7 +539,7 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
                                       "event",
                                       "start",
                                       "jobid",
-                                      (json_int_t)job_id))) {
+                                      job_id))) {
         flux_log_error (h, "flux_rpc_pack failed for %s job-exec.override: start", idf58 (job_id));
         return -1;
     }
@@ -558,7 +552,7 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
                                       "event",
                                       "finish",
                                       "jobid",
-                                      (json_int_t)job_id))) {
+                                      job_id))) {
         flux_log_error (h,
                         "flux_rpc_pack failed for %s in job-exec.override: finish",
                         idf58 (job_id));
