@@ -27,6 +27,7 @@
 
 #include "src/common/libutil/idf58.h"
 #include "src/common/libutil/eventlog.h"
+#include "src/common/select/select.h"
 
 /*
  * Callback firing when job has completed.
@@ -198,16 +199,17 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     flux_t *h = flux_jobtap_get_flux (p);
     flux_jobid_t *id;
     flux_t *delegated;
-    const char *uri;
+    const char *uri, *strategy = NULL;
     json_t *jobspec;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
+    struct cluster_config *config;
 
     if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
         return flux_jobtap_reject_job (p,
                                        args,
                                        "error processing delegate: %s",
-                                       flux_plugin_arg_strerror (args));
+                                       strerror (errno));
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
@@ -216,7 +218,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                 id,
                                 "dependency",
                                 "value",
-                                &uri,
+                                &strategy,
                                 "jobspec",
                                 &jobspec)
             < 0
@@ -226,6 +228,11 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                        args,
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
+    }
+    if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
+        || !(uri = select_cluster (config, strategy))) {
+        flux_log_error (h, "%s: could not select URI", idf58 (*id));
+        return -1;
     }
     if (!(delegated = flux_open (uri, 0))) {
         flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
@@ -467,5 +474,14 @@ static const struct flux_plugin_handler tab[] = {
 
 int flux_plugin_init (flux_plugin_t *p)
 {
-    return flux_plugin_register (p, "delegate", tab);
+    struct cluster_config *config;
+    flux_t *h = flux_jobtap_get_flux (p);
+
+    if (!h
+        || flux_plugin_register (p, "delegate", tab) < 0
+        || !(config = selection_init(h))
+        || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
+        return -1;
+    }
+    return 0;
 }
