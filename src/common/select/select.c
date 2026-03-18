@@ -378,15 +378,18 @@ out:
 
 const char *select_cluster (struct cluster_config *config, const char *strategy)
 {
-    if (!strategy || !config) {
+    if (!config) {
         errno = EINVAL;
         return NULL;
     }
-    if (strcmp (strategy, "least_pending") == 0) {
+    if (!strategy || strcmp(strategy, "random") == 0){
+        return select_random_cluster (config);
+    }
+    else if (strcmp (strategy, "least_pending") == 0) {
         return select_least_pending_cluster (config);
     } else if (strcmp (strategy, "shortest_match") == 0) {
         return select_shortest_match_cluster (config);
     } else {
-        return select_random_cluster (config);
+        return NULL;
     }
 }

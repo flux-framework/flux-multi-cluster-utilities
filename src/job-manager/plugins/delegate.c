@@ -213,7 +213,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s:s} s:o}",
+                                "{s:I s:{s?s} s:o}",
                                 "id",
                                 id,
                                 "dependency",
