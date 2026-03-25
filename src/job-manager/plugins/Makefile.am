@@ -4,6 +4,10 @@ AM_CFLAGS = \
     $(FLUX_CORE_CFLAGS) \
     $(JANSSON_CFLAGS)
 
+AM_CPPFLAGS = \
+	-I$(top_srcdir) \
+	$(CODE_COVERAGE_CPPFLAGS)
+
 AM_LDFLAGS = \
 	$(CODE_COVERAGE_LIBS)
 
@@ -22,5 +26,7 @@ delegate_la_LDFLAGS = \
 	-avoid-version
 
 delegate_la_LIBADD= \
+	$(top_builddir)/src/common/libutil/libutil.la \
+	$(top_builddir)/src/common/select/libselect.la \
     $(FLUX_CORE_LIBS) \
     $(JANSSON_LIBS)
