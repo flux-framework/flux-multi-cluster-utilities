@@ -1,0 +1,5 @@
+Sep 9, 2025.
+1. Add documentation on the select_and_delegate plugin, along with description of the policies.
+2. Clean up and format code.
+3. Test with valgrind and address any memory leaks.
+

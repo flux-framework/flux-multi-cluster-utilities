@@ -1,0 +1,6 @@
+{
+    "clusters": [
+        "ssh://tuolumne1020/var/tmp/patki1/flux-c808zO/local-0",
+        "ssh://tuolumne1011/var/tmp/patki1/flux-XW9D1a/local-0"
+    ]
+}

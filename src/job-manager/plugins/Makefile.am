@@ -11,7 +11,8 @@ jobtapdir = \
     $(fluxlibdir)/job-manager/plugins/
 
 jobtap_LTLIBRARIES = \
-	delegate.la
+	delegate.la \
+	select_and_delegate.la
 
 delegate_la_SOURCES = \
 	delegate.c
@@ -24,3 +25,15 @@ delegate_la_LDFLAGS = \
 delegate_la_LIBADD= \
     $(FLUX_CORE_LIBS) \
     $(JANSSON_LIBS)
+
+select_and_delegate_la_SOURCES = \
+	select_and_delegate.c
+
+select_and_delegate_la_LDFLAGS = \
+	$(AM_LDFLAGS) \
+	-module \
+	-avoid-version
+
+select_and_delegate_la_LIBADD= \
+    $(FLUX_CORE_LIBS) \
+    $(JANSSON_LIBS)	
