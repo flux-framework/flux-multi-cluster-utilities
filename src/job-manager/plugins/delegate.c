@@ -25,113 +25,9 @@
 #include <flux/core.h>
 #include <flux/jobtap.h>
 
-/*  Convenience function to convert a flux_jobid_t to F58 encoding
- *  If the encode fails (unlikely), then the decimal encoding is returned.
- */
-static inline const char *idf58 (flux_jobid_t id)
-{
-    static __thread char buf[21];
-    if (flux_job_id_encode (id, "f58", buf, sizeof (buf)) < 0) {
-        /* 64bit integer is guaranteed to fit in 21 bytes
-         * floor(log(2^64-1)/log(1)) + 1 = 20
-         */
-        (void)sprintf (buf, "%ju", (uintmax_t)id);
-    }
-    return buf;
-}
-
-bool eventlog_entry_validate (json_t *entry)
-{
-    json_t *name;
-    json_t *timestamp;
-    json_t *context;
-
-    if (!json_is_object (entry) || !(name = json_object_get (entry, "name"))
-        || !json_is_string (name) || !(timestamp = json_object_get (entry, "timestamp"))
-        || !json_is_number (timestamp))
-        return false;
-
-    if ((context = json_object_get (entry, "context"))) {
-        if (!json_is_object (context))
-            return false;
-    }
-
-    return true;
-}
-
-static json_t *eventlog_entry_decode (const char *entry)
-{
-    int len;
-    char *ptr;
-    json_t *o;
-
-    if (!entry)
-        goto einval;
-
-    if (!(len = strlen (entry)))
-        goto einval;
-
-    if (entry[len - 1] != '\n')
-        goto einval;
-
-    if (entry[len - 1] != '\n')
-        goto einval;
-
-    ptr = strchr (entry, '\n');
-    if (ptr != &entry[len - 1])
-        goto einval;
-
-    if (!(o = json_loads (entry, JSON_ALLOW_NUL, NULL)))
-        goto einval;
-
-    if (!eventlog_entry_validate (o)) {
-        json_decref (o);
-        goto einval;
-    }
-
-    return o;
-
-einval:
-    errno = EINVAL;
-    return NULL;
-}
-
-static int eventlog_entry_parse (json_t *entry,
-                                 double *timestamp,
-                                 const char **name,
-                                 json_t **context)
-{
-    double t;
-    const char *n;
-    json_t *c;
-
-    if (!entry) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (json_unpack (entry, "{ s:F s:s }", "timestamp", &t, "name", &n) < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (!json_unpack (entry, "{ s:o }", "context", &c)) {
-        if (!json_is_object (c)) {
-            errno = EINVAL;
-            return -1;
-        }
-    } else
-        c = NULL;
-
-    if (timestamp)
-        (*timestamp) = t;
-    if (name)
-        (*name) = n;
-    if (context)
-        (*context) = c;
-
-    return 0;
-}
+#include "src/common/libutil/idf58.h"
+#include "src/common/libutil/eventlog.h"
+#include "src/common/select/select.h"
 
 /*
  * Callback firing when job has completed.
@@ -303,25 +199,26 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     flux_t *h = flux_jobtap_get_flux (p);
     flux_jobid_t *id;
     flux_t *delegated;
-    const char *uri;
+    const char *uri, *strategy = NULL;
     json_t *jobspec;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
+    struct cluster_config *config;
 
     if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
         return flux_jobtap_reject_job (p,
                                        args,
                                        "error processing delegate: %s",
-                                       flux_plugin_arg_strerror (args));
+                                       strerror (errno));
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s:s} s:o}",
+                                "{s:I s:{s?s} s:o}",
                                 "id",
                                 id,
                                 "dependency",
                                 "value",
-                                &uri,
+                                &strategy,
                                 "jobspec",
                                 &jobspec)
             < 0
@@ -331,6 +228,11 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                        args,
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
+    }
+    if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
+        || !(uri = select_cluster (config, strategy))) {
+        flux_log_error (h, "%s: could not select URI", idf58 (*id));
+        return -1;
     }
     if (!(delegated = flux_open (uri, 0))) {
         flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
@@ -572,5 +474,14 @@ static const struct flux_plugin_handler tab[] = {
 
 int flux_plugin_init (flux_plugin_t *p)
 {
-    return flux_plugin_register (p, "delegate", tab);
+    struct cluster_config *config;
+    flux_t *h = flux_jobtap_get_flux (p);
+
+    if (!h
+        || flux_plugin_register (p, "delegate", tab) < 0
+        || !(config = selection_init(h))
+        || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
+        return -1;
+    }
+    return 0;
 }

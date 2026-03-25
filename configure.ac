@@ -130,7 +130,10 @@ X_AC_EXPAND_INSTALL_DIRS
 AC_CONFIG_FILES([Makefile
   src/Makefile
   src/job-manager/Makefile
-  src/job-manager/plugins/Makefile])
+  src/job-manager/plugins/Makefile
+  src/common/Makefile
+  src/common/libutil/Makefile
+  src/common/select/Makefile])
 AC_OUTPUT
 
 echo "

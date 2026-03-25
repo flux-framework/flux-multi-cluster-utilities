@@ -1,5 +1,7 @@
 .NOTPARALLEL:
 
-SUBDIRS = job-manager
+SUBDIRS = \
+	job-manager \
+	common
 
 check-local: all
