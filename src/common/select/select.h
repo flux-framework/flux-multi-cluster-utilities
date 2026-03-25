@@ -12,7 +12,7 @@
 
 /* Initialize the selection logic.
  */
-struct cluster_config *selection_init (flux_t *h);
+struct cluster_config *selection_init (flux_t *h, const char *config_path);
 
 /* Tear down the selection logic.
  */
