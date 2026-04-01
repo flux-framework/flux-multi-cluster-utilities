@@ -476,12 +476,12 @@ int flux_plugin_init (flux_plugin_t *p)
 {
     struct cluster_config *config;
     flux_t *h = flux_jobtap_get_flux (p);
-    const char *config_path = NULL;
+    const char *selection_config_path = NULL;
 
     if (!h
         || flux_plugin_register (p, "delegate", tab) < 0
-        || flux_plugin_conf_unpack (p, "{s:s}", "config", &config_path) < 0
-        || !(config = selection_init (h, config_path))
+        || flux_plugin_conf_unpack (p, "{s:s}", "config", &selection_config_path) < 0
+        || !(config = selection_init (h, selection_config_path))
         || flux_plugin_aux_set (p,
                                 "flux::delegate::selection_config",
                                 config,

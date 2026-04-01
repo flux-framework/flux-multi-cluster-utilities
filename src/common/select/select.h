@@ -10,7 +10,7 @@
 
 #include <flux/core.h>
 
-/* Initialize the selection logic.
+/* Initialize the selection logic from a TOML config file.
  */
 struct cluster_config *selection_init (flux_t *h, const char *config_path);
 

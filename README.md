@@ -29,6 +29,22 @@ The plugin can be loaded with the command below.
 Note that an absolute path needs to be specified here. 
 `flux jobtap load $(realpath path/to/plugin/delegate.so)`
 
+For selection-based delegation, pass a TOML config file with a top-level
+`clusters` string array.
+
+```toml
+clusters = [
+     "ssh://cluster-a/path/to/local-0",
+     "ssh://cluster-b/path/to/local-0"
+]
+```
+
+Load the plugin with that configuration as follows.
+
+```
+flux jobtap load $(realpath path/to/plugin/delegate.so) config=$(realpath path/to/clusters.toml)
+```
+
 ### Interactive Testing on Peer-to-Peer Flux Instances
 
 Here, we show an example of peer-to-peer flux instances, residing on the same cluster
