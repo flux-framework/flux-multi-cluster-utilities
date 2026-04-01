@@ -213,7 +213,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s?s} s:o}",
+                                "{s:I s:{s:s} s:o}",
                                 "id",
                                 id,
                                 "dependency",
@@ -476,11 +476,17 @@ int flux_plugin_init (flux_plugin_t *p)
 {
     struct cluster_config *config;
     flux_t *h = flux_jobtap_get_flux (p);
+    const char *selection_config_path = NULL;
 
     if (!h
         || flux_plugin_register (p, "delegate", tab) < 0
-        || !(config = selection_init(h))
-        || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
+        || flux_plugin_conf_unpack (p, "{s:s}", "config", &selection_config_path) < 0
+        || !(config = selection_init (h, selection_config_path))
+        || flux_plugin_aux_set (p,
+                                "flux::delegate::selection_config",
+                                config,
+                                (flux_free_f)selection_destroy)
+               < 0) {
         return -1;
     }
     return 0;
