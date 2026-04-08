@@ -15,4 +15,9 @@ noinst_LTLIBRARIES = libselect.la
 
 libselect_la_SOURCES = \
 	select.h \
+	select_private.h \
+	parser.c \
 	select.c
+
+libselect_la_LIBADD = \
+	$(top_builddir)/src/common/libtomlc99/libtomlc99.la

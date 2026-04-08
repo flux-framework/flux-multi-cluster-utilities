@@ -8,388 +8,288 @@
  * SPDX-License-Identifier: LGPL-3.0
 \************************************************************/
 
+#include <errno.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <jansson.h>
 
 #include "select.h"
 
-/* Configuration structure */
 struct cluster_config {
     flux_t *h;
-    char **uris;     /* Array of cluster URIs */
-    int count;       /* Number of clusters */
-    int initialized; /* Random seed initialized flag */
+    char **uris;
+    size_t count;
+    bool random_seeded;
 };
 
-/* Load cluster URIs from config file */
-static int load_config (struct cluster_config *config)
-{
-    return 0;
-}
+enum selection_metric_kind {
+    SELECTION_METRIC_MATCH_TIME,
+    SELECTION_METRIC_PENDING_JOBS,
+};
 
-struct cluster_config *selection_init (flux_t *h)
+struct selection_metric {
+    enum selection_metric_kind kind;
+    union {
+        double match_time;
+        int64_t pending_jobs;
+    } value;
+};
+
+static bool selection_has_clusters (struct cluster_config *config,
+                                    const char *strategy_name)
 {
-    struct cluster_config *config;
-    if (!(config = malloc (sizeof (struct cluster_config))))
-        return NULL;
-    config->h = h;
-    config->count = 0;
-    if (load_config (config) < 0) {
-        free (config);
-        return NULL;
+    if (!config || config->count == 0) {
+        errno = ENOENT;
+        if (config) {
+            flux_log (config->h,
+                      LOG_ERR,
+                      "No clusters available for %s",
+                      strategy_name);
+        }
+        return false;
     }
-    return config;
+    return true;
 }
 
-void selection_destroy (struct cluster_config *config)
+static void seed_random_selection (struct cluster_config *config)
 {
-    free (config);
+    if (!config->random_seeded) {
+        srand ((unsigned int)(time (NULL) ^ getpid ()));
+        config->random_seeded = true;
+    }
 }
 
-/* Select a random cluster URI */
+static size_t select_random_index (struct cluster_config *config)
+{
+    seed_random_selection (config);
+    return (size_t)(rand () % config->count);
+}
+
 static const char *select_random_cluster (struct cluster_config *config)
 {
-    if (config->count == 0) {
-        flux_log (config->h, LOG_ERR, "No clusters available");
+    size_t index;
+
+    if (!selection_has_clusters (config, "random selection"))
         return NULL;
+
+    index = select_random_index (config);
+    flux_log (config->h, LOG_DEBUG, "Selected cluster %zu: %s", index, config->uris[index]);
+    return config->uris[index];
+}
+
+static int query_max_match_time (flux_t *h, const char *uri, double *value)
+{
+    flux_t *remote = NULL;
+    flux_future_t *future = NULL;
+    int64_t V, E, J;
+    double load, max, avg;
+    int rc = -1;
+
+    if (!h || !uri || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!(remote = flux_open (uri, 0))) {
+        flux_log (h, LOG_ERR, "Failed to open flux instance %s", uri);
+        goto out;
+    }
+    if (!(future = flux_rpc (remote, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+        flux_log (h, LOG_ERR, "Failed to query match statistics for %s", uri);
+        goto out;
+    }
+    if (flux_rpc_get_unpack (future,
+                             "{s:I s:I s:f s?{s?{s?I s?{s?f s?f}}}}",
+                             "V",
+                             &V,
+                             "E",
+                             &E,
+                             "load-time",
+                             &load,
+                             "match",
+                             "succeeded",
+                             "njobs",
+                             &J,
+                             "stats",
+                             "max",
+                             &max,
+                             "avg",
+                             &avg)
+            < 0) {
+        flux_log (h, LOG_ERR, "Failed to unpack match statistics for %s", uri);
+        goto out;
+    }
+    *value = max;
+    rc = 0;
+out:
+    flux_future_destroy (future);
+    if (remote)
+        flux_close (remote);
+    return rc;
+}
+
+static int query_pending_jobs (flux_t *h, const char *uri, int64_t *value)
+{
+    flux_t *remote = NULL;
+    flux_future_t *future = NULL;
+    json_t *running = NULL;
+    int rc = -1;
+
+    if (!h || !uri || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!(remote = flux_open (uri, 0))) {
+        flux_log (h, LOG_ERR, "Failed to open flux instance %s", uri);
+        goto out;
+    }
+    if (!(future = flux_rpc (remote, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+        flux_log (h, LOG_ERR, "Failed to query queue statistics for %s", uri);
+        goto out;
+    }
+    if (flux_rpc_get_unpack (future,
+                             "{s?{s?{s?{s?I} s?{s?o}}}}",
+                             "queues",
+                             "default",
+                             "action_counts",
+                             "pending",
+                             value,
+                             "scheduled_queues",
+                             "running",
+                             &running)
+            < 0) {
+        flux_log (h, LOG_ERR, "Failed to unpack queue statistics for %s", uri);
+        goto out;
+    }
+    rc = 0;
+out:
+    flux_future_destroy (future);
+    if (remote)
+        flux_close (remote);
+    return rc;
+}
+
+static int query_cluster_metric (flux_t *h,
+                                 const char *uri,
+                                 enum selection_metric_kind kind,
+                                 struct selection_metric *metric)
+{
+    if (!metric) {
+        errno = EINVAL;
+        return -1;
     }
 
-    int index = rand () % config->count;
-    flux_log (config->h, LOG_DEBUG, "Selected cluster %d: %s", index, config->uris[index]);
+    metric->kind = kind;
+    switch (kind) {
+    case SELECTION_METRIC_MATCH_TIME:
+        return query_max_match_time (h, uri, &metric->value.match_time);
+    case SELECTION_METRIC_PENDING_JOBS:
+        return query_pending_jobs (h, uri, &metric->value.pending_jobs);
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
 
-    return config->uris[index];
+static bool selection_metric_is_better (const struct selection_metric *candidate,
+                                        const struct selection_metric *best)
+{
+    if (candidate->kind != best->kind)
+        return false;
+    if (candidate->kind == SELECTION_METRIC_MATCH_TIME)
+        return candidate->value.match_time < best->value.match_time;
+    return candidate->value.pending_jobs < best->value.pending_jobs;
+}
+
+static const char *select_cluster_by_metric (struct cluster_config *config,
+                                             const char *strategy_name,
+                                             const char *failure_message,
+                                             struct selection_metric *best_metric)
+{
+    size_t index;
+    const char *best_uri = NULL;
+
+    if (!selection_has_clusters (config, strategy_name))
+        return NULL;
+    for (index = 0; index < config->count; index++) {
+        struct selection_metric metric;
+
+        if (query_cluster_metric (config->h,
+                                  config->uris[index],
+                                  best_metric->kind,
+                                  &metric)
+                < 0)
+            continue;
+        if (!best_uri || selection_metric_is_better (&metric, best_metric)) {
+            *best_metric = metric;
+            best_uri = config->uris[index];
+        }
+    }
+    if (!best_uri) {
+        errno = EIO;
+        flux_log (config->h, LOG_ERR, "%s", failure_message);
+    }
+    return best_uri;
 }
 
 static const char *select_shortest_match_cluster (struct cluster_config *config)
 {
-    int rc = -1;
-    int64_t V, E, J;
-    double load, max, avg;
-    flux_future_t *f = NULL;
-    double *shortest_count;
-    const char *queue_uri;
+    struct selection_metric best_metric = {
+        .kind = SELECTION_METRIC_MATCH_TIME,
+        .value.match_time = 0.0,
+    };
+    const char *best_uri = select_cluster_by_metric (config,
+                                                     "shortest_match",
+                                                     "Unable to compute shortest_match for any cluster",
+                                                     &best_metric);
 
-    if (!(f = flux_rpc (config->h, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
-        flux_log (config->h, LOG_INFO, "RPC itself failed");
-        goto out;
+    if (!best_uri) {
+        return NULL;
     }
-
-    if (f == NULL) {
-        flux_log (config->h, LOG_INFO, "I have a NULL ptr.");
-    } else {
-        flux_log (config->h, LOG_INFO, "I got not null");
-    }
-
-    void *json_str = malloc (sizeof (json_t));
-    // const void *json_str;
-    int ret = flux_future_get (f, (const void **)&json_str);
-    if (ret == -1) {
-        flux_log (config->h, LOG_INFO, "==== I got -1 with flux_future_get");
-    } else {
-        flux_log (config->h, LOG_INFO, "==== flux_future_get payload is non-empty");
-    }
-
-    // flux_logconfig->h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_dumps((json_t*)json_str,
-    // JSON_INDENT(4)));
-    // //flux_logconfig->h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_str);
-
-    if ((rc = flux_rpc_get_unpack (f,
-                                   "{s:I s:I s:f s?{s?{s?I s?{s?f s?f}}}}",
-                                   "V",
-                                   &V,
-                                   "E",
-                                   &E,
-                                   "load-time",
-                                   &load,
-                                   "match",
-                                   "succeeded",
-                                   "njobs",
-                                   &J,
-                                   "stats",
-                                   "max",
-                                   &max,
-                                   "avg",
-                                   &avg))
-        < 0) {
-        flux_log (config->h, LOG_INFO, "Unpack Failed after RPC!");
-        goto out;
-    }
-
-    flux_log (config->h, LOG_INFO, "Average Match Time is: %lf", avg);
-
-    // Approach A: Statically iterate over URIs of clusters. Query match times and pick the URI with
-    // least max match time
-
-    if (config->count == 0) {
-        flux_log (config->h, LOG_ERR, "No clusters available");
-        goto out;
-    }
-
-    shortest_count = (double *)malloc (config->count * sizeof (double));
-    int ind_iter;
-    for (ind_iter = 0; ind_iter < config->count; ind_iter++) {
-        flux_log (config->h,
-                  LOG_DEBUG,
-                  "Selecting cluster %d: %s",
-                  ind_iter,
-                  config->uris[ind_iter]);
-        queue_uri = config->uris[ind_iter];
-        flux_log (config->h,
-                  LOG_DEBUG,
-                  "Querying match time for cluster %d: %s",
-                  ind_iter,
-                  config->uris[ind_iter]);
-
-        flux_t *h1 = flux_open (queue_uri, 0);
-        if (!h1) {
-            flux_log (config->h,
-                      LOG_ERR,
-                      "Failed to open flux instance for cluster %d: %s",
-                      ind_iter,
-                      queue_uri);
-            continue;
-        }
-
-        flux_future_t *f1 =
-            flux_rpc (h1, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0);
-        if (!f1) {
-            flux_log (config->h,
-                      LOG_ERR,
-                      "Failed to send RPC for cluster %d: %s",
-                      ind_iter,
-                      queue_uri);
-            flux_close (h1);
-            continue;
-        }
-
-        if ((rc = flux_rpc_get_unpack (f,
-                                       "{s:I s:I s:f s?{s?{s?I s?{s?f s?f}}}}",
-                                       "V",
-                                       &V,
-                                       "E",
-                                       &E,
-                                       "load-time",
-                                       &load,
-                                       "match",
-                                       "succeeded",
-                                       "njobs",
-                                       &J,
-                                       "stats",
-                                       "max",
-                                       &max,
-                                       "avg",
-                                       &avg))
-            < 0) {
-            flux_log (config->h, LOG_INFO, "Unpack Failed after RPC!");
-            goto out;
-        }
-        flux_log (config->h, LOG_INFO, "Queue URI: %s\nMax match time is: %lf", queue_uri, max);
-        shortest_count[ind_iter] = max;
-        // flux_logconfig->h, LOG_INFO, "Pending job count: %ld Running queues are %s",
-        // json_dumps((json_t*) running_queues, JSON_INDENT(4)));
-        //  Process the response from the RPC call
-        //  ...
-
-        flux_close (h1);
-    }
-
-    // Pick the index with least pending job count
-    int least_index = 0;
-    double max_match = 999999999.9999f;
-    for (ind_iter = 0; ind_iter < config->count; ind_iter++) {
-        if (max_match >= shortest_count[ind_iter]) {
-            least_index = ind_iter;
-            max_match = shortest_count[ind_iter];
-        }
-    }
-    free (shortest_count);
     flux_log (config->h,
               LOG_INFO,
-              "Queue %s has shortest max match time of %lf",
-              config->uris[least_index],
-              max_match);
-
-    return config->uris[least_index];
-
-out:
-    flux_log (config->h, LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
-    flux_future_destroy (f);
-    return NULL;
+              "Selected %s with max match time %lf",
+              best_uri,
+              best_metric.value.match_time);
+    return best_uri;
 }
 
 static const char *select_least_pending_cluster (struct cluster_config *config)
 {
-    int rc = -1;
-    int64_t pending_jobs;
-    json_t *running_queues = NULL;
-    int *pending_count = NULL;
-    // int64_t V, E, J;
-    // double load, max, avg;
-    const char *queue_uri;
-    flux_future_t *f = NULL;
+    struct selection_metric best_metric = {
+        .kind = SELECTION_METRIC_PENDING_JOBS,
+        .value.pending_jobs = 0,
+    };
+    const char *best_uri = select_cluster_by_metric (config,
+                                                     "least_pending",
+                                                     "Unable to compute least_pending for any cluster",
+                                                     &best_metric);
 
-    //------------------------------------------
-    // Approach: We can do this in one of two ways.
-    //           Approach A is static. Approach B is dynamic:
-    //     A. We already have the configs with URIs of each cluster at plugin load
-    //        We iterate over each URI, try to get the pending jobs for each and pick the one with
-    //        the least.
-    //     B. We query the cluster manager to get queue ID for each cluster, try to query pending
-    //     jobs for each
-    //        and make a decision based on that. Not sure which one is easiest to implement, so
-    //        attempting both for reference. We can pick whichever works first, followed by
-    //        whichever is most stable.
-
-    if (!(f = flux_rpc (config->h, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
-        flux_log (config->h, LOG_INFO, "sched-fluxion-qmanager.stats-get RPC failed");
-        goto out;
-    } else {
-        flux_log (config->h, LOG_INFO, "f from RPC call is not null");
+    if (!best_uri) {
+        return NULL;
     }
-
-    void *json_str = malloc (sizeof (json_t));
-    // const void *json_str;
-    int ret = flux_future_get (f, (const void **)&json_str);
-    if (ret == -1) {
-        flux_log (config->h, LOG_INFO, "==== I got -1 with flux_future_get");
-    } else {
-        flux_log (config->h, LOG_INFO, "==== flux_future_get payload is non-empty");
-    }
-
-    // flux_logconfig->h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_dumps((json_t*)json_str,
-    // JSON_INDENT(4)));
-    // //flux_logconfig->h, LOG_INFO, "RECEIVED RPC OBJECT %s", json_str);
-
-    if ((rc = flux_rpc_get_unpack (f,
-                                   "{s?{s?{s?{s?I} s?{s?o}}}}",
-                                   "queues",
-                                   "default",
-                                   "action_counts",
-                                   "pending",
-                                   &pending_jobs,
-                                   "scheduled_queues",
-                                   "running",
-                                   &running_queues))
-        < 0) {
-        flux_log (config->h, LOG_INFO, "Unpack Failed after RPC!");
-        goto out;
-    }
-
-    // pending jobs at top level instance is useless, but keeping it here for reference
-    flux_log (config->h, LOG_INFO, "Pending job count is: %ld", pending_jobs);
     flux_log (config->h,
               LOG_INFO,
-              "Running queues are %s",
-              json_dumps ((json_t *)running_queues, JSON_INDENT (4)));
-
-    // Approach A: Statically iterate over URIs of clusters. Try to query pending jobs
-
-    if (config->count == 0) {
-        flux_log (config->h, LOG_ERR, "No clusters available");
-        goto out;
-    }
-
-    pending_count = (int *)malloc (config->count * sizeof (int));
-    int ind_iter;
-    for (ind_iter = 0; ind_iter < config->count; ind_iter++) {
-        flux_log (config->h,
-                  LOG_DEBUG,
-                  "Selecting cluster %d: %s",
-                  ind_iter,
-                  config->uris[ind_iter]);
-        queue_uri = config->uris[ind_iter];
-        flux_log (config->h,
-                  LOG_DEBUG,
-                  "Querying pending jobs for cluster %d: %s",
-                  ind_iter,
-                  config->uris[ind_iter]);
-
-        flux_t *h1 = flux_open (queue_uri, 0);
-        if (!h1) {
-            flux_log (config->h,
-                      LOG_ERR,
-                      "Failed to open flux instance for cluster %d: %s",
-                      ind_iter,
-                      queue_uri);
-            continue;
-        }
-
-        flux_future_t *f1 =
-            flux_rpc (h1, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0);
-        if (!f1) {
-            flux_log (config->h,
-                      LOG_ERR,
-                      "Failed to send RPC for cluster %d: %s",
-                      ind_iter,
-                      queue_uri);
-            flux_close (h1);
-            continue;
-        }
-
-        if ((rc = flux_rpc_get_unpack (f1,
-                                       "{s?{s?{s?{s?I} s?{s?o}}}}",
-                                       "queues",
-                                       "default",
-                                       "action_counts",
-                                       "pending",
-                                       &pending_jobs,
-                                       "scheduled_queues",
-                                       "running",
-                                       &running_queues))
-            < 0) {
-            flux_log (config->h, LOG_INFO, "Unpack Failed after RPC!");
-            goto out;
-        }
-        flux_log (config->h,
-                  LOG_INFO,
-                  "Queue URI: %s\nPending job count is: %ld",
-                  queue_uri,
-                  pending_jobs);
-        pending_count[ind_iter] = pending_jobs;
-        // flux_logconfig->h, LOG_INFO, "Pending job count: %ld Running queues are %s",
-        // json_dumps((json_t*) running_queues, JSON_INDENT(4)));
-        //  Process the response from the RPC call
-        //  ...
-
-        flux_close (h1);
-    }
-
-    // Pick the index with least pending job count
-    int least_index = 0;
-    int min_pending = 9999999;
-    for (ind_iter = 0; ind_iter < config->count; ind_iter++) {
-        if (min_pending >= pending_count[ind_iter]) {
-            least_index = ind_iter;
-            min_pending = pending_count[ind_iter];
-        }
-    }
-    free (pending_count);
-    flux_log (config->h,
-              LOG_INFO,
-              "Queue %s has least no. of jobs %d",
-              config->uris[least_index],
-              min_pending);
-
-    return config->uris[least_index];
-out:
-    flux_log (config->h, LOG_INFO, "\n\nEND. Testing Flux RPC Failed!!!\n\n");
-    flux_future_destroy (f);
-    return NULL;
+              "Selected %s with pending job count %ld",
+              best_uri,
+              best_metric.value.pending_jobs);
+    return best_uri;
 }
 
 const char *select_cluster (struct cluster_config *config, const char *strategy)
 {
-    if (!config) {
+    if (!strategy || !config) {
         errno = EINVAL;
         return NULL;
     }
-    if (!strategy || strcmp(strategy, "random") == 0){
-        return select_random_cluster (config);
-    }
-    else if (strcmp (strategy, "least_pending") == 0) {
+    if (strcmp (strategy, "least_pending") == 0)
         return select_least_pending_cluster (config);
-    } else if (strcmp (strategy, "shortest_match") == 0) {
+    if (strcmp (strategy, "shortest_match") == 0)
         return select_shortest_match_cluster (config);
-    } else {
-        return NULL;
-    }
+    return select_random_cluster (config);
 }
