@@ -13,6 +13,7 @@ JOB_ROW_FORMAT='{id} {status} {name} {nnodes} {ntasks} {nodelist}'
 SOURCE_NODES="${SOURCE_NODES:-1}"
 TARGET_NODES="${TARGET_NODES:-1}"
 NUM_TARGETS="${NUM_TARGETS:-2}"
+TARGET_NODE_COUNTS="${TARGET_NODE_COUNTS:-}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-60}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-5}"
 KEEP_CONFIG="${KEEP_CONFIG:-0}"
@@ -20,8 +21,10 @@ KEEP_CONFIG="${KEEP_CONFIG:-0}"
 declare -a CHILD_IDS=()
 declare -a TARGET_URIS=()
 declare -a TARGET_INSTANCE_IDS=()
+declare -a TARGET_NODE_COUNT_LIST=()
 SOURCE_INSTANCE=""
 JOB_ID=""
+CONFIG_INPUT_PATH=""
 
 fail()
 {
@@ -29,12 +32,47 @@ fail()
     exit 1
 }
 
+usage()
+{
+    printf 'Usage: %s [NUM_TARGETS|CONFIG_FILE]\n' "$0" >&2
+    exit 1
+}
+
+load_target_layout()
+{
+    local index
+
+    if [[ $# -gt 1 ]]; then
+        usage
+    fi
+
+    if [[ $# -eq 1 ]]; then
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+            NUM_TARGETS="$1"
+            TARGET_NODES=1
+            TARGET_NODE_COUNTS=""
+        else
+            CONFIG_INPUT_PATH="$1"
+            [[ -r "${CONFIG_INPUT_PATH}" ]] || fail "Config file not found: ${CONFIG_INPUT_PATH}"
+            # shellcheck disable=SC1090
+            source "${CONFIG_INPUT_PATH}"
+        fi
+    fi
+
+    if [[ -n "${TARGET_NODE_COUNTS}" ]]; then
+        read -r -a TARGET_NODE_COUNT_LIST <<<"${TARGET_NODE_COUNTS}"
+    else
+        for index in $(seq 1 "${NUM_TARGETS}"); do
+            TARGET_NODE_COUNT_LIST+=("${TARGET_NODES}")
+        done
+    fi
+}
+
 report_submit_failure()
 {
     local submit_output="$1"
     local dmesg_tail=""
 
-#------------------------------------------
     dmesg_tail="$(flux proxy "${SOURCE_INSTANCE}" flux dmesg 2>&1 | tail -n 40 || true)"
 
     {
@@ -93,8 +131,7 @@ wait_for_remote_uri()
     local label="$2"
     local remaining="${WAIT_TIMEOUT}"
     local remote_uri=""
-    
-#------------------------------------------
+
     while (( remaining > 0 )); do
         remote_uri="$(flux uri --remote "jobid:${instance_id}" 2>/dev/null | tr -d '[:space:]' || true)"
         if [[ -n "${remote_uri}" ]]; then
@@ -206,6 +243,8 @@ flux jobtap load "${PLUGIN_PATH}" config="${CONFIG_PATH}" >/dev/null
 EOF
 }
 
+load_target_layout "$@"
+
 cd "${REPO_ROOT}"
 [[ -f "${PLUGIN_PATH}" ]] || fail "Plugin not found: ${PLUGIN_PATH}"
 
@@ -214,9 +253,9 @@ CHILD_IDS+=("${SOURCE_INSTANCE}")
 wait_for_running "${SOURCE_INSTANCE}" "source instance"
 printf 'source instance id: %s\n' "${SOURCE_INSTANCE}"
 
-#------------------------------------------
 for index in $(seq 1 "${NUM_TARGETS}"); do
-    child_id="$(flux submit -N"${TARGET_NODES}" flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
+    target_nodes="${TARGET_NODE_COUNT_LIST[$((index - 1))]}"
+    child_id="$(flux submit -N"${target_nodes}" flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
     CHILD_IDS+=("${child_id}")
     TARGET_INSTANCE_IDS+=("${child_id}")
     wait_for_running "${child_id}" "target instance ${index}"
@@ -231,8 +270,6 @@ write_config
 load_plugin
 sleep "${SETTLE_SECONDS}"
 
-#------------------------------------------
-
 if submit_output="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency='delegate:random' -N1 -n1 hostname 2>&1)"; then
     JOB_ID="$(printf '%s\n' "${submit_output}" | tail -n 1 | tr -d '[:space:]')"
 else
@@ -241,12 +278,8 @@ else
 fi
 
 printf 'submitted job id: %s\n' "${JOB_ID}"
-#------------------------------------------
 
 wait_for_clean "${JOB_ID}"
-
-#------------------------------------------
-
 EVENTLOG="$(flux proxy "${SOURCE_INSTANCE}" flux job eventlog "${JOB_ID}")"
 DELEGATION_LINES="$(printf '%s\n' "${EVENTLOG}" | grep -E 'delegate::|Delegation' || true)"
 DELEGATED_JOB_ID="$(extract_delegated_job_id "${EVENTLOG}")"
