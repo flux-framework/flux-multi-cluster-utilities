@@ -1,6 +1,4 @@
-#!/usr/bin/env bash
-
-set -euo pipefail
+#!/usr/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -29,6 +27,9 @@ fail()
     exit 1
 }
 
+
+
+### ---- cleanup resources
 cleanup()
 {
     set +e
@@ -53,6 +54,8 @@ wait_for_running()
     local instance_id="$1"
     local label="$2"
     local remaining="${WAIT_TIMEOUT}"
+
+##------ check status of "running" jobs. Later will be replaced by wait on a real job?
 
     while (( remaining > 0 )); do
         if flux jobs --format='{status}' "${instance_id}" 2>/dev/null | grep -q 'RUN'; then
@@ -85,6 +88,9 @@ wait_for_remote_uri()
     fail "Timed out waiting for ${label} (${instance_id}) remote URI"
 }
 
+
+# ----------------------------------------------------------
+# Setup remote URI and validate 
 preflight_remote_uri()
 {
     local remote_uri="$1"
@@ -190,6 +196,26 @@ find_target_job_row()
     return 1
 }
 
+find_target_eventlog_info()
+{
+    local delegated_job_id_raw="$1"
+    local delegated_job_id_f58="$2"
+    local target_instance_id=""
+    local lookup_id=""
+
+    for target_instance_id in "${TARGET_INSTANCE_IDS[@]}"; do
+        for lookup_id in "${delegated_job_id_f58}" "${delegated_job_id_raw}"; do
+            [[ -n "${lookup_id}" ]] || continue
+            if [[ -n "$(query_target_eventlog "${target_instance_id}" "${lookup_id}")" ]]; then
+                printf '%s|%s\n' "${target_instance_id}" "${lookup_id}"
+                return 0
+            fi
+        done
+    done
+
+    return 1
+}
+
 wait_for_target_job_row()
 {
     local delegated_job_id_raw="$1"
@@ -226,10 +252,10 @@ write_config()
     } >"${CONFIG_PATH}"
 }
 
+#---- run steps to load delegate (reload if previously loaded)
 load_plugin()
 {
     flux proxy "${SOURCE_INSTANCE}" bash <<EOF
-set -euo pipefail
 if flux jobtap list | grep -q 'delegate.so'; then
     flux jobtap remove delegate.so
 fi
@@ -282,10 +308,17 @@ printf 'DEBUG: top-level broker size: %s\n' "$(flux getattr size 2>/dev/null | t
 printf 'DEBUG: top-level resource view:\n'
 flux resource list || true
 
+#-----------------------------------------------------------------------
+#  setup top instance
+
 SOURCE_INSTANCE="$(flux submit -N"${SOURCE_NODES}" flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
 CHILD_IDS+=("${SOURCE_INSTANCE}")
 wait_for_running "${SOURCE_INSTANCE}" "source instance"
 printf 'source instance id: %s\n' "${SOURCE_INSTANCE}"
+
+
+#-----------------------------------------------------------------------
+# Initial setup according to README -- setup cluster instances and URIs
 
 for index in $(seq 1 "${NUM_TARGETS}"); do
     child_id="$(flux submit -N"${TARGET_NODES}" flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
@@ -326,6 +359,7 @@ DELEGATED_JOB_ID_RAW="$(extract_delegated_job_id "${EVENTLOG}")"
 DELEGATED_JOB_ID_F58="$(convert_job_id_to_f58 "${DELEGATED_JOB_ID_RAW}")"
 SELECTED_TARGET_URI="$(extract_selected_cluster_uri "${SOURCE_DMESG_TAIL}")"
 TARGET_JOB_INFO=""
+TARGET_EVENTLOG_INFO=""
 SELECTED_TARGET_INSTANCE_ID="$(map_target_uri_to_instance_id "${SELECTED_TARGET_URI}" || true)"
 SELECTED_TARGET_INSTANCE_ID="${SELECTED_TARGET_INSTANCE_ID:-not found}"
 TARGET_LOOKUP_ID="not found"
@@ -338,14 +372,38 @@ printf '%s\n' "${DELEGATION_LINES}"
 print_target_debug "${DELEGATED_JOB_ID_RAW}" "${DELEGATED_JOB_ID_F58}" "${SOURCE_DMESG_TAIL}"
 
 if [[ -n "${DELEGATED_JOB_ID_RAW}" || -n "${DELEGATED_JOB_ID_F58}" ]]; then
-    TARGET_JOB_INFO="$(wait_for_target_job_row "${DELEGATED_JOB_ID_RAW}" "${DELEGATED_JOB_ID_F58}" || true)"
+    TARGET_JOB_INFO="$(find_target_job_row "${DELEGATED_JOB_ID_RAW}" "${DELEGATED_JOB_ID_F58}" || true)"
     if [[ -n "${TARGET_JOB_INFO}" ]]; then
         IFS='|' read -r SELECTED_TARGET_INSTANCE_ID TARGET_LOOKUP_ID TARGET_JOB_ROW <<<"${TARGET_JOB_INFO}"
-    fi
-    if [[ "${SELECTED_TARGET_INSTANCE_ID}" != "not found" && -n "${DELEGATED_JOB_ID_F58}" ]]; then
-        if [[ -n "$(query_target_eventlog "${SELECTED_TARGET_INSTANCE_ID}" "${DELEGATED_JOB_ID_F58}")" ]]; then
+    else
+        TARGET_EVENTLOG_INFO="$(find_target_eventlog_info "${DELEGATED_JOB_ID_RAW}" "${DELEGATED_JOB_ID_F58}" || true)"
+        if [[ -n "${TARGET_EVENTLOG_INFO}" ]]; then
+            IFS='|' read -r SELECTED_TARGET_INSTANCE_ID TARGET_LOOKUP_ID <<<"${TARGET_EVENTLOG_INFO}"
+            TARGET_JOB_ROW="eventlog-only confirmation"
             TARGET_EVENTLOG_FOUND="found"
+        else
+            TARGET_JOB_INFO="$(wait_for_target_job_row "${DELEGATED_JOB_ID_RAW}" "${DELEGATED_JOB_ID_F58}" || true)"
+            if [[ -n "${TARGET_JOB_INFO}" ]]; then
+                IFS='|' read -r SELECTED_TARGET_INSTANCE_ID TARGET_LOOKUP_ID TARGET_JOB_ROW <<<"${TARGET_JOB_INFO}"
+            fi
         fi
+    fi
+    if [[ "${TARGET_EVENTLOG_FOUND}" != "found" && "${SELECTED_TARGET_INSTANCE_ID}" != "not found" ]]; then
+        for lookup_id in "${DELEGATED_JOB_ID_F58}" "${DELEGATED_JOB_ID_RAW}"; do
+            [[ -n "${lookup_id}" ]] || continue
+            if [[ -n "$(query_target_eventlog "${SELECTED_TARGET_INSTANCE_ID}" "${lookup_id}")" ]]; then
+                TARGET_EVENTLOG_FOUND="found"
+                break
+            fi
+        done
+    fi
+    if [[ "${TARGET_EVENTLOG_FOUND}" == "found" && "${TARGET_JOB_ROW}" == "not found" ]]; then
+        TARGET_JOB_ROW="eventlog-only confirmation"
+    fi
+    if [[ "${TARGET_LOOKUP_ID}" == "not found" && -n "${DELEGATED_JOB_ID_F58}" ]]; then
+        TARGET_LOOKUP_ID="${DELEGATED_JOB_ID_F58}"
+    elif [[ "${TARGET_LOOKUP_ID}" == "not found" && -n "${DELEGATED_JOB_ID_RAW}" ]]; then
+        TARGET_LOOKUP_ID="${DELEGATED_JOB_ID_RAW}"
     fi
     printf 'Delegated remote job id (raw): %s\n' "${DELEGATED_JOB_ID_RAW:-not found}"
     printf 'Delegated remote job id (f58): %s\n' "${DELEGATED_JOB_ID_F58:-not found}"
