@@ -38,6 +38,21 @@ usage()
     exit 1
 }
 
+validate_target_layout()
+{
+    local target_nodes=""
+
+    [[ "${NUM_TARGETS}" =~ ^[1-9][0-9]*$ ]] || fail 'NUM_TARGETS must be a positive integer'
+
+    if [[ -n "${TARGET_NODE_COUNTS}" && ${#TARGET_NODE_COUNT_LIST[@]} -ne ${NUM_TARGETS} ]]; then
+        fail 'TARGET_NODE_COUNTS count must match NUM_TARGETS'
+    fi
+
+    for target_nodes in "${TARGET_NODE_COUNT_LIST[@]}"; do
+        [[ "${target_nodes}" =~ ^[1-9][0-9]*$ ]] || fail 'Target node counts must be positive integers'
+    done
+}
+
 load_target_layout()
 {
     local index
@@ -62,10 +77,14 @@ load_target_layout()
     if [[ -n "${TARGET_NODE_COUNTS}" ]]; then
         read -r -a TARGET_NODE_COUNT_LIST <<<"${TARGET_NODE_COUNTS}"
     else
-        for index in $(seq 1 "${NUM_TARGETS}"); do
-            TARGET_NODE_COUNT_LIST+=("${TARGET_NODES}")
-        done
+        if [[ "${NUM_TARGETS}" =~ ^[1-9][0-9]*$ ]]; then
+            for index in $(seq 1 "${NUM_TARGETS}"); do
+                TARGET_NODE_COUNT_LIST+=("${TARGET_NODES}")
+            done
+        fi
     fi
+
+    validate_target_layout
 }
 
 report_submit_failure()
@@ -181,34 +200,99 @@ extract_delegated_job_id()
     printf '%s\n' "$1" | sed -nE '/delegate::submit/ s/.*jobid["=:[:space:]]+("?)([^",}[:space:]]+).*/\2/p' | head -n 1
 }
 
-find_target_job_row()
+convert_job_id_to_f58()
 {
     local delegated_job_id="$1"
-    local target_instance_id="" target_job_row=""
+
+    [[ -n "${delegated_job_id}" ]] || return 0
+    flux job id --to=f58 "${delegated_job_id}" 2>/dev/null || true
+}
+
+query_target_eventlog()
+{
+    local target_instance_id="$1"
+    local lookup_id="$2"
+
+    [[ -n "${lookup_id}" ]] || return 1
+    flux proxy "${target_instance_id}" flux job eventlog "${lookup_id}" 2>/dev/null || true
+}
+
+query_target_job_row()
+{
+    local target_instance_id="$1"
+    local lookup_id="$2"
+
+    [[ -n "${lookup_id}" ]] || return 1
+
+    flux proxy "${target_instance_id}" bash <<EOF 2>/dev/null || true
+set -euo pipefail
+flux jobs -a --format='${JOB_ROW_FORMAT}' "${lookup_id}"
+EOF
+}
+
+find_target_job_row()
+{
+    local delegated_job_id_raw="$1"
+    local delegated_job_id_f58="$2"
+    local target_instance_id=""
+    local target_job_row=""
+    local lookup_id=""
 
     for target_instance_id in "${TARGET_INSTANCE_IDS[@]}"; do
-        target_job_row="$(flux proxy "${target_instance_id}" flux jobs -a --format="${JOB_ROW_FORMAT}" "${delegated_job_id}" 2>/dev/null || true)"
-        if [[ -n "${target_job_row}" ]]; then
-            printf '%s|%s\n' "${target_instance_id}" "${target_job_row}"
-            return 0
-        fi
+        for lookup_id in "${delegated_job_id_raw}" "${delegated_job_id_f58}"; do
+            [[ -n "${lookup_id}" ]] || continue
+            target_job_row="$(query_target_job_row "${target_instance_id}" "${lookup_id}")"
+            if [[ -n "${target_job_row}" ]]; then
+                printf '%s|%s\n' "${target_instance_id}" "${target_job_row}"
+                return 0
+            fi
+        done
     done
 
     return 1
 }
 
-wait_for_target_job_row()
+find_target_eventlog_info()
 {
-    local delegated_job_id="$1"
+    local delegated_job_id_raw="$1"
+    local delegated_job_id_f58="$2"
+    local target_instance_id=""
+    local lookup_id=""
+
+    for target_instance_id in "${TARGET_INSTANCE_IDS[@]}"; do
+        for lookup_id in "${delegated_job_id_raw}" "${delegated_job_id_f58}"; do
+            [[ -n "${lookup_id}" ]] || continue
+            if [[ -n "$(query_target_eventlog "${target_instance_id}" "${lookup_id}")" ]]; then
+                printf '%s\n' "${target_instance_id}"
+                return 0
+            fi
+        done
+    done
+
+    return 1
+}
+
+wait_for_target_confirmation()
+{
+    local delegated_job_id_raw="$1"
+    local delegated_job_id_f58="$2"
     local remaining="${WAIT_TIMEOUT}"
     local target_job_info=""
+    local target_eventlog_info=""
 
     while (( remaining > 0 )); do
-        target_job_info="$(find_target_job_row "${delegated_job_id}" || true)"
+        target_job_info="$(find_target_job_row "${delegated_job_id_raw}" "${delegated_job_id_f58}" || true)"
         if [[ -n "${target_job_info}" ]]; then
-            printf '%s\n' "${target_job_info}"
+            printf 'row|%s\n' "${target_job_info}"
             return 0
         fi
+
+        target_eventlog_info="$(find_target_eventlog_info "${delegated_job_id_raw}" "${delegated_job_id_f58}" || true)"
+        if [[ -n "${target_eventlog_info}" ]]; then
+            printf 'eventlog|%s\n' "${target_eventlog_info}"
+            return 0
+        fi
+
         sleep 1
         remaining=$((remaining - 1))
     done
@@ -283,17 +367,21 @@ wait_for_clean "${JOB_ID}"
 EVENTLOG="$(flux proxy "${SOURCE_INSTANCE}" flux job eventlog "${JOB_ID}")"
 DELEGATION_LINES="$(printf '%s\n' "${EVENTLOG}" | grep -E 'delegate::|Delegation' || true)"
 DELEGATED_JOB_ID="$(extract_delegated_job_id "${EVENTLOG}")"
-TARGET_JOB_INFO=""
+DELEGATED_JOB_ID_F58="$(convert_job_id_to_f58 "${DELEGATED_JOB_ID}")"
+TARGET_CONFIRMATION=""
 SELECTED_TARGET_INSTANCE_ID="not found"
 TARGET_JOB_ROW="not found"
 
 [[ -n "${DELEGATION_LINES}" ]] || fail "No delegation events found for ${JOB_ID}"
 printf '%s\n' "${DELEGATION_LINES}"
 
-if [[ -n "${DELEGATED_JOB_ID}" ]]; then
-    TARGET_JOB_INFO="$(wait_for_target_job_row "${DELEGATED_JOB_ID}" || true)"
-    if [[ -n "${TARGET_JOB_INFO}" ]]; then
-        IFS='|' read -r SELECTED_TARGET_INSTANCE_ID TARGET_JOB_ROW <<<"${TARGET_JOB_INFO}"
+if [[ -n "${DELEGATED_JOB_ID}" || -n "${DELEGATED_JOB_ID_F58}" ]]; then
+    TARGET_CONFIRMATION="$(wait_for_target_confirmation "${DELEGATED_JOB_ID}" "${DELEGATED_JOB_ID_F58}" || true)"
+    if [[ -n "${TARGET_CONFIRMATION}" ]]; then
+        IFS='|' read -r target_confirmation_kind SELECTED_TARGET_INSTANCE_ID TARGET_JOB_ROW <<<"${TARGET_CONFIRMATION}"
+        if [[ "${target_confirmation_kind}" == 'eventlog' ]]; then
+            TARGET_JOB_ROW='eventlog-only confirmation'
+        fi
     fi
     printf 'Delegated remote job id: %s\n' "${DELEGATED_JOB_ID}"
 else
