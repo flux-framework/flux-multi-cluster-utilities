@@ -441,7 +441,7 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
         errno = EINVAL;
         return NULL;
     }
-    if (!strategy || strcmp(strategy, "random") == 0){
+    if (!strategy || strlen (strategy) == 0 || strcmp(strategy, "random") == 0){
         return select_random_cluster (config);
     }
     else if (strcmp (strategy, "least_pending") == 0) {
