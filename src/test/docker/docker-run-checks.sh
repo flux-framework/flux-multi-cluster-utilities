@@ -7,7 +7,7 @@
 #
 #
 # option Defaults:
-PROJECT=flux-multi-cluster-utilties
+PROJECT=flux-multi-cluster-utilities
 BASE_DOCKER_REPO=fluxrm/flux-sched
 
 IMAGE=focal
