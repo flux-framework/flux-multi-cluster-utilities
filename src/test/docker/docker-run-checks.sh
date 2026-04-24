@@ -10,7 +10,7 @@
 PROJECT=flux-multi-cluster-utilities
 BASE_DOCKER_REPO=fluxrm/flux-sched
 
-IMAGE=focal
+IMAGE=noble
 JOBS=2
 MOUNT_HOME_ARGS="--volume=$HOME:/home/$USER -e HOME"
 

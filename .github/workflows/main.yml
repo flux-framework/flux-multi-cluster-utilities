@@ -44,8 +44,8 @@ jobs:
       if: failure() || cancelled()
       run: src/test/checks-annotate.sh
 
-  check-focal:
-    name: focal checks
+  check-noble:
+    name: noble checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -59,7 +59,7 @@ jobs:
     - run: git fetch --tags || true
     - name: docker-run-checks
       timeout-minutes: 45
-      run: src/test/docker/docker-run-checks.sh -j 4 -i focal --
+      run: src/test/docker/docker-run-checks.sh -j 4 -i noble --
 
     - name: annotate errors
       if: failure() || cancelled()
