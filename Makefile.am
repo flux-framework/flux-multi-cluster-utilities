@@ -1,6 +1,6 @@
 .NOTPARALLEL:
 
-SUBDIRS = . src
+SUBDIRS = . src t
 
 EXTRA_DIST = \
 	README.md
