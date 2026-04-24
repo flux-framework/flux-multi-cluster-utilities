@@ -1,4 +1,4 @@
-FROM fluxrm/flux-sched:focal
+FROM fluxrm/flux-sched:noble
 
 ARG USER=fluxuser
 ARG UID=1000
