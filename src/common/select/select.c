@@ -6,9 +6,11 @@
  * For details, see https://github.com/flux-framework.
  *
  * SPDX-License-Identifier: LGPL-3.0
-\************************************************************/
+ \************************************************************/
 
+#include <ctype.h>
 #include <errno.h>
+#include <float.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -241,7 +243,7 @@ static const char *select_shortest_match_cluster (struct cluster_config *config)
 {
     struct selection_metric best_metric = {
         .kind = SELECTION_METRIC_MATCH_TIME,
-        .value.match_time = 0.0,
+        .value.match_time = DBL_MAX,
     };
     const char *best_uri = select_cluster_by_metric (config,
                                                      "shortest_match",
@@ -263,7 +265,7 @@ static const char *select_least_pending_cluster (struct cluster_config *config)
 {
     struct selection_metric best_metric = {
         .kind = SELECTION_METRIC_PENDING_JOBS,
-        .value.pending_jobs = 0,
+        .value.pending_jobs = INT64_MAX,
     };
     const char *best_uri = select_cluster_by_metric (config,
                                                      "least_pending",
@@ -281,6 +283,86 @@ static const char *select_least_pending_cluster (struct cluster_config *config)
     return best_uri;
 }
 
+/*
+ * Parse a non-negative integer from string s.
+ * Returns 0 on success and sets *out to the parsed value.
+ * Returns -1 and sets errno on failure:
+ *   EINVAL     — empty or NULL input, or non-numeric characters
+ *   ERANGE     — overflow / out of range for size_t
+ */
+static int parse_assign_index (const char *s, size_t *out)
+{
+    char *endptr = NULL;
+
+    if (!s || *s == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Reject leading whitespace or negative sign */
+    if (*s == '-' || !isdigit ((unsigned char)*s)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    errno = 0;
+    unsigned long val = strtoul (s, &endptr, 10);
+    if (errno == ERANGE || *endptr != '\0' || val > SIZE_MAX) {
+        errno = ERANGE;
+        return -1;
+    }
+
+    *out = (size_t)val;
+    return 0;
+}
+
+/*
+ * Select cluster by explicit sub-instance index.
+ *
+ * Strategy string formats:
+ *   "assign"          → defaults to index 0
+ *   "assign:<N>"      → select cluster at index N
+ *
+ * Returns the URI on success, or NULL with errno set on failure.
+ */
+static const char *select_assign_cluster (struct cluster_config *config, const char *strategy)
+{
+    size_t idx = 0;
+    const char *suffix = NULL;
+
+    if (!selection_has_clusters (config, "assign"))
+        return NULL;
+
+    suffix = strchr (strategy, ':');
+    if (suffix) {
+        /* Found colon — parse the index from everything after it */
+        if (parse_assign_index (suffix + 1, &idx) < 0) {
+            flux_log (config->h,
+                      LOG_ERR,
+                      "assign: invalid sub-instance ID '%s': %s",
+                      suffix + 1,
+                      strerror (errno));
+            return NULL;
+        }
+    }
+
+    if (idx >= config->count) {
+        flux_log (config->h,
+                  LOG_ERR,
+                  "assign: sub-instance ID %zu out of range (0..%zu)",
+                  idx,
+                  config->count - 1);
+        errno = ERANGE;
+        return NULL;
+    }
+
+    flux_log (config->h,
+              LOG_INFO,
+              "Selected cluster %zu by assign policy: %s",
+              idx,
+              config->uris[idx]);
+    return config->uris[idx];
+}
+
 const char *select_cluster (struct cluster_config *config, const char *strategy)
 {
     if (!strategy || !config) {
@@ -291,5 +373,14 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
         return select_least_pending_cluster (config);
     if (strcmp (strategy, "shortest_match") == 0)
         return select_shortest_match_cluster (config);
+    /* Check for assign policy before falling through to random */
+    if (strncmp (strategy, "assign", 6) == 0) {
+        const char *colon = strchr (strategy, ':');
+        if (!colon || *(colon + 1) == '\0') {
+            /* "assign" or "assign:" — both default to index 0 */
+            return select_assign_cluster (config, strategy);
+        }
+        return select_assign_cluster (config, strategy);
+    }
     return select_random_cluster (config);
 }
