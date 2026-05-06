@@ -402,7 +402,7 @@ function setup_result_obj(line)
   sub("^(not )?ok[ \t]*", "", line)
 
   # If the result has an explicit number, get it and strip it; otherwise,
-  # automatically assing the next progresive number to it.
+  # automatically assign the next progressive number to it.
   if (line ~ /^[0-9]+$/ || line ~ /^[0-9]+[^a-zA-Z0-9_]/)
     {
       match(line, "^[0-9]+")
@@ -496,7 +496,7 @@ function get_test_exit_message(status)
     # shells, when a child process die due to signal number n, can leave
     # in $? an exit status of 256+n instead of the more standard 128+n.
     # Apparently, both behaviours are allowed by POSIX (2008), so be
-    # prepared to handle them both.  See also Austing Group report ID
+    # prepared to handle them both.  See also Austin Group report ID
     # 0000051 <http://www.austingroupbugs.net/view.php?id=51>
     exit_details = sprintf(" (terminated by signal %d?)", status - 256)
   else

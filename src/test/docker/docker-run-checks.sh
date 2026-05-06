@@ -7,10 +7,10 @@
 #
 #
 # option Defaults:
-PROJECT=flux-multi-cluster-utilties
+PROJECT=flux-multi-cluster-utilities
 BASE_DOCKER_REPO=fluxrm/flux-sched
 
-IMAGE=focal
+IMAGE=noble
 JOBS=2
 MOUNT_HOME_ARGS="--volume=$HOME:/home/$USER -e HOME"
 
@@ -163,7 +163,6 @@ else
         --workdir=/usr/src \
         --volume=$TOP:/usr/src \
         $MOUNT_HOME_ARGS \
-        -h compute-01 \
         -e CC \
         -e CXX \
         -e LDFLAGS \
