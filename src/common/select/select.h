@@ -10,9 +10,10 @@
 
 #include <flux/core.h>
 
-/* Initialize the selection logic from a TOML config file.
+/* Initialize the selection logic. Cluster URIs are loaded from the
+ * Flux runtime configuration (the "delegate" array of strings).
  */
-struct cluster_config *selection_init (flux_t *h, const char *config_path);
+struct cluster_config *selection_init (flux_t *h);
 
 /* Tear down the selection logic.
  */

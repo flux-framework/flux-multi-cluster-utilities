@@ -23,14 +23,14 @@ test_expect_success 'start subinstance for delegation' '
 
 test_expect_success 'configure flux with subinstance for delegation' '
 	URI=$(flux uri --local ${subinstance}) &&
-	DELEGATE_CONFIG="${SHARNESS_TEST_SRCDIR}/clusters.toml" &&
-	printf "clusters = [\"%s\"]\n" "${URI}" >"${DELEGATE_CONFIG}"
+	echo "
+delegate = [ \"${URI}\" ]
+	" | flux config load &&
+	flux config get | jq -e .
 '
 
 test_expect_success 'plugin can be loaded' '
-	DELEGATE_CONFIG="${SHARNESS_TEST_SRCDIR}/clusters.toml" &&
-	flux jobtap load "${SHARNESS_TEST_SRCDIR}"/../src/job-manager/plugins/.libs/delegate.so \
-		config="${DELEGATE_CONFIG}" &&
+	flux jobtap load "${SHARNESS_TEST_SRCDIR}"/../src/job-manager/plugins/.libs/delegate.so &&
 	flux jobtap list | grep delegate.so
 '
 

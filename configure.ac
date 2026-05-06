@@ -133,7 +133,6 @@ AC_CONFIG_FILES([Makefile
   src/job-manager/plugins/Makefile
   src/common/Makefile
   src/common/libutil/Makefile
-  src/common/libtomlc99/Makefile
   src/common/select/Makefile
   t/Makefile])
 AC_OUTPUT

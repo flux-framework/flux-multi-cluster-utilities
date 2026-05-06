@@ -26,14 +26,12 @@ test_expect_success 'start two target sub-instances' '
 test_expect_success 'configure delegate plugin with two target URIs' '
 	uri_0=$(flux uri --local ${target_0}) &&
 	uri_1=$(flux uri --local ${target_1}) &&
-	DELEGATE_CONFIG="${SHARNESS_TEST_SRCDIR}/clusters.toml" &&
-	printf "clusters = [\"%s\", \"%s\"]\n" "${uri_0}" "${uri_1}" >"${DELEGATE_CONFIG}"
+	printf "delegate = [ \"%s\", \"%s\" ]\n" "${uri_0}" "${uri_1}" |
+		flux config load
 '
 
 test_expect_success 'plugin can be loaded' '
-	DELEGATE_CONFIG="${SHARNESS_TEST_SRCDIR}/clusters.toml" &&
-	flux jobtap load "${SHARNESS_TEST_SRCDIR}"/../src/job-manager/plugins/.libs/delegate.so \
-		config="${DELEGATE_CONFIG}" &&
+	flux jobtap load "${SHARNESS_TEST_SRCDIR}"/../src/job-manager/plugins/.libs/delegate.so &&
 	flux jobtap list | grep delegate.so
 '
 
