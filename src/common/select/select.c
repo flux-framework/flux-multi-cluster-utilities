@@ -384,3 +384,97 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
     }
     return select_random_cluster (config);
 }
+
+/* Load cluster URIs from the Flux runtime configuration.
+ * Expects a top-level "delegate" key whose value is an array of URI
+ * strings.  An absent or empty array yields a zero-cluster config.
+ */
+static int load_config (struct cluster_config *config)
+{
+    flux_error_t error;
+    json_t *delegate = NULL;
+    const flux_conf_t *conf;
+    size_t index;
+    json_t *value;
+
+    if (!(conf = flux_get_conf (config->h))) {
+        flux_log_error (config->h, "flux_get_conf");
+        return -1;
+    }
+
+    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
+        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
+        return -1;
+    }
+
+    if (!delegate || !json_is_array (delegate)) {
+        config->count = 0;
+        config->uris = NULL;
+        return 0;
+    }
+
+    config->count = json_array_size (delegate);
+    if (config->count == 0) {
+        config->uris = NULL;
+        return 0;
+    }
+    if (!(config->uris = calloc (config->count, sizeof (char *)))) {
+        flux_log_error (config->h, "calloc");
+        return -1;
+    }
+
+    json_array_foreach (delegate, index, value) {
+        const char *uri;
+        if (!json_is_string (value)) {
+            flux_log (config->h, LOG_ERR, "delegate array contains non-string");
+            goto error;
+        }
+        uri = json_string_value (value);
+        if (!(config->uris[index] = strdup (uri))) {
+            flux_log_error (config->h, "strdup");
+            goto error;
+        }
+    }
+
+    return 0;
+error:
+    if (config->uris) {
+        for (size_t i = 0; i < index; i++)
+            free (config->uris[i]);
+        free (config->uris);
+        config->uris = NULL;
+    }
+    config->count = 0;
+    return -1;
+}
+
+struct cluster_config *selection_init (flux_t *h)
+{
+    struct cluster_config *config;
+
+    if (!h) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (!(config = calloc (1, sizeof (*config))))
+        return NULL;
+    config->h = h;
+    if (load_config (config) < 0) {
+        free (config);
+        return NULL;
+    }
+    return config;
+}
+
+void selection_destroy (struct cluster_config *config)
+{
+    if (!config)
+        return;
+    if (config->uris) {
+        for (size_t i = 0; i < config->count; i++)
+            free (config->uris[i]);
+        free (config->uris);
+    }
+    free (config);
+}
+
