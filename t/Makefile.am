@@ -19,7 +19,10 @@ T_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
 # Test scripts
 TESTSCRIPTS = \
 	t0000-sharness.t \
-	t1000-delegate-load.t
+	t1000-delegate-load.t \
+	t1001-delegate-assign.t \
+	t1002-delegate-least-pending.t \
+	t1003-delegate-shortest-match.t
 
 # dist_check_SCRIPTS are built and installed for 'make distcheck'
 dist_check_SCRIPTS = \
