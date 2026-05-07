@@ -87,6 +87,10 @@ test_expect_success 'random policy delegation still works' '
 	flux job eventlog ${jobid} | grep -q "delegate::submit"
 '
 
+test_expect_success 'unload delegate plugin' '
+	flux jobtap remove delegate.so
+'
+
 test_expect_success 'cancel subinstances' '
 	flux cancel --all
 '

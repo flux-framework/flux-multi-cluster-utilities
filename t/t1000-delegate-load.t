@@ -40,6 +40,10 @@ test_expect_success 'delegation submission works' '
 	flux job eventlog -H $jobid
 '
 
+test_expect_success 'unload delegate plugin' '
+	flux jobtap remove delegate.so
+'
+
 test_expect_success 'cancel subinstances' '
 	flux cancel --all
 '

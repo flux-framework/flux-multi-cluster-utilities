@@ -43,8 +43,8 @@ test_expect_success 'submit 2 jobs with assign policy to target_0 without waitin
 	# Submit first job explicitly to target_0 using assign:0 WITHOUT waiting for completion.
 	jobid_0a=$(flux submit --dependency=delegate:assign:0 hostname) &&
 
-	# Small delay to let the first job enter pending state on target_0
-	sleep 2 &&
+	# Wait for first job to be delegated to target_0 before submitting second
+	flux job wait-event --timeout=60 ${jobid_0a} "delegate::submit" &&
 
 	# Submit second job also to target_0 using assign:0 WITHOUT waiting for completion.
 	# Now target_0 should have 2 pending jobs while target_1 has 0.
@@ -52,9 +52,9 @@ test_expect_success 'submit 2 jobs with assign policy to target_0 without waitin
 '
 
 test_expect_success 'shortest_match policy delegates to target_1 (lower match time)' '
-	# Small delay to ensure the assign:0 jobs are properly queued on target_0
-	# before we query for shortest_match. This ensures accurate match time metrics.
-	sleep 2 &&
+	# Wait for second job to be delegated to target_0 before querying shortest_match.
+	# This ensures both jobs are pending on target_0 when we query match time metrics.
+	flux job wait-event --timeout=60 ${jobid_0b} "delegate::submit" &&
 
 	# Submit a job with shortest_match policy.
 	# Target 0 has 2 pending jobs (likely longer match times due to queue contention).
