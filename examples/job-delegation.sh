@@ -17,6 +17,15 @@
 #
 # Default layout uses examples/multisystem-layout-2.conf (Tuolumne + Corona + Tioga).
 #
+# Steps:
+#   1. Load layout configuration from file to determine target systems, queues, and node counts.
+#   2. Allocate the source Flux instance on the local system.
+#   3. Allocate target sub-instances on each system defined in the layout (local or via SSH).
+#   4. Write a TOML config with target URIs and load the delegate plugin into the source instance.
+#   5. Submit each trace job through the source instance with the appropriate delegation policy.
+#   6. Wait for each job to complete, extract delegation events, and identify which target received it.
+#   7. Print a summary report showing per-job results and per-target hit counts.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +34,7 @@ PREFIX="$(grep '^prefix = ' "${REPO_ROOT}/Makefile" | awk '{print $3}' || true)"
 PREFIX="${PREFIX:-${REPO_ROOT}/install}"
 PLUGIN_PATH="${PREFIX}/lib/flux/job-manager/plugins/delegate.so"
 CONFIG_PATH="${SCRIPT_DIR}/multisystem-clusters.toml"
-DEFAULT_LAYOUT_FILE="${SCRIPT_DIR}/multisystem-layout-2.conf"
+DEFAULT_LAYOUT_FILE="${SCRIPT_DIR}/multisystem-layout.conf"
 
 # --- Environment-configurable defaults ----------------------------------------
 SOURCE_NODES="${SOURCE_NODES:-1}"

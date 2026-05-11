@@ -10,6 +10,13 @@
 # Usage (from within a Flux allocation):
 #   bash random-delegation-3instances.sh
 #
+# Steps:
+#   1. Allocate the source Flux instance on the local system.
+#   2. Allocate three target sub-instances, each with 1 node.
+#   3. Write a TOML config with target URIs and load the delegate plugin.
+#   4. Submit a job with --dependency=delegate:random to trigger random selection.
+#   5. Wait for the job to finish, then verify which target instance received it.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
