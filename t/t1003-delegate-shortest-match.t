@@ -41,14 +41,15 @@ test_expect_success 'configure delegate plugin with two target URIs and load it'
 
 test_expect_success 'submit 2 jobs with assign policy to target_0 without waiting (to create load)' '
 	# Submit first job explicitly to target_0 using assign:0 WITHOUT waiting for completion.
-	jobid_0a=$(flux submit --dependency=delegate:assign:0 hostname) &&
+	# Use a non-trivial runtime so the load remains present for both shortest_match checks.
+	jobid_0a=$(flux submit --dependency=delegate:assign:0 sleep 30) &&
 
 	# Wait for first job to be delegated to target_0 before submitting second
 	flux job wait-event --timeout=60 ${jobid_0a} "delegate::submit" &&
 
 	# Submit second job also to target_0 using assign:0 WITHOUT waiting for completion.
 	# Now target_0 should have 2 pending jobs while target_1 has 0.
-	jobid_0b=$(flux submit --dependency=delegate:assign:0 hostname)
+	jobid_0b=$(flux submit --dependency=delegate:assign:0 sleep 30)
 '
 
 test_expect_success 'shortest_match policy delegates to target_1 (lower match time)' '
@@ -72,7 +73,7 @@ test_expect_success 'shortest_match policy delegates to target_1 (lower match ti
 
 	# Verify the delegated job is on target_1 (not target_0)
 	# This confirms shortest_match selected target_1 which should have shorter match times
-	flux proxy ${target_1} flux jobs --format="{id}" "${delegated_id}" >/dev/null 2>&1
+	flux proxy ${target_1} flux jobs -a --format="{id}" "${delegated_id}" >/dev/null 2>&1
 '
 
 test_expect_success 'shortest_match: verify delegated job completes successfully on target_1' '
@@ -88,7 +89,7 @@ test_expect_success 'shortest_match: verify delegated job completes successfully
 		head -n 1) &&
 
 	# Verify the delegated job is on target_1 (which should still have shorter match times)
-	flux proxy ${target_1} flux jobs --format="{id}" "${delegated_id2}" >/dev/null 2>&1 &&
+	flux proxy ${target_1} flux jobs -a --format="{id}" "${delegated_id2}" >/dev/null 2>&1 &&
 
 	# Wait for the job to complete successfully
 	flux job wait-event --timeout=60 ${jobid2} clean

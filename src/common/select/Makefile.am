@@ -15,4 +15,6 @@ noinst_LTLIBRARIES = libselect.la
 
 libselect_la_SOURCES = \
 	select.h \
+	performance.h \
+	performance.c \
 	select.c
