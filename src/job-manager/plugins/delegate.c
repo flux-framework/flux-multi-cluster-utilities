@@ -20,6 +20,9 @@
 #include <jansson.h>
 #include <stdint.h>
 #include <limits.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <flux/core.h>
@@ -167,14 +170,10 @@ static void submit_callback (flux_future_t *f, void *arg)
  * loaded, it would attempt to delegate to itself in an infinite
  * loop.
  */
-static char *remove_dependency_and_encode (json_t *jobspec)
+static int clear_dependencies (json_t *jobspec)
 {
-    char *encoded_jobspec;
     json_t *dependency_list = NULL;
 
-    if (!(jobspec = json_deep_copy (jobspec))) {
-        return NULL;
-    }
     if (json_unpack (jobspec,
                      "{s:{s:{s:o}}}",
                      "attributes",
@@ -183,12 +182,151 @@ static char *remove_dependency_and_encode (json_t *jobspec)
                      &dependency_list)
             < 0
         || json_array_clear (dependency_list) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int get_jobspec_node_count (json_t *jobspec, size_t *nodes)
+{
+    json_t *resources = NULL;
+    json_t *node = NULL;
+    json_t *count = NULL;
+    json_int_t value;
+    const char *type = NULL;
+
+    if (!jobspec || !nodes) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (json_unpack (jobspec, "{s:o}", "resources", &resources) < 0
+        || !json_is_array (resources)
+        || json_array_size (resources) != 1
+        || !(node = json_array_get (resources, 0))) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    type = json_string_value (json_object_get (node, "type"));
+    count = json_object_get (node, "count");
+    if (!type || strcmp (type, "node") != 0 || !json_is_integer (count)) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    value = json_integer_value (count);
+    if (value <= 0 || (uintmax_t)value > SIZE_MAX) {
+        errno = ERANGE;
+        return -1;
+    }
+    *nodes = (size_t)value;
+    return 0;
+}
+
+static int rewrite_jobspec_node_count (json_t *jobspec, size_t nodes)
+{
+    json_t *resources = NULL;
+    json_t *node = NULL;
+
+    if (!jobspec || nodes == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (json_unpack (jobspec, "{s:o}", "resources", &resources) < 0
+        || !json_is_array (resources)
+        || json_array_size (resources) != 1
+        || !(node = json_array_get (resources, 0))) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    const char *type = json_string_value (json_object_get (node, "type"));
+    if (!type || strcmp (type, "node") != 0 || !json_is_integer (json_object_get (node, "count"))) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (json_object_set_new (node, "count", json_integer ((json_int_t)nodes)) < 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
+}
+
+static char *prepare_jobspec_and_encode (json_t *jobspec, const struct selection_result *result)
+{
+    char *encoded_jobspec;
+
+    if (!(jobspec = json_deep_copy (jobspec)))
+        return NULL;
+    if (clear_dependencies (jobspec) < 0) {
+        json_decref (jobspec);
+        return NULL;
+    }
+    if (result && result->requires_jobspec_rewrite
+        && rewrite_jobspec_node_count (jobspec, result->selected_nodes) < 0) {
         json_decref (jobspec);
         return NULL;
     }
     encoded_jobspec = json_dumps (jobspec, 0);
     json_decref (jobspec);
     return encoded_jobspec;
+}
+
+static int get_performance_request_fields (json_t *jobspec,
+                                           json_t **params,
+                                           bool *allow_resource_rewrite,
+                                           size_t *original_nodes)
+{
+    json_t *performance = NULL;
+    const char *key;
+    json_t *value;
+
+    if (!jobspec || !params || !allow_resource_rewrite || !original_nodes) {
+        errno = EINVAL;
+        return -1;
+    }
+    *params = NULL;
+    *allow_resource_rewrite = false;
+    *original_nodes = 0;
+    if (json_unpack (jobspec,
+                     "{s:{s:{s:o}}}",
+                     "attributes",
+                     "user",
+                     "performance",
+                     &performance)
+        < 0
+        || !json_is_object (performance)) {
+        errno = EINVAL;
+        return -1;
+    }
+    value = json_object_get (performance, "allow_resource_rewrite");
+    if (value) {
+        if (!json_is_boolean (value)) {
+            errno = EINVAL;
+            return -1;
+        }
+        *allow_resource_rewrite = json_is_true (value);
+    }
+    if (!(*params = json_object ()))
+        return -1;
+    json_object_foreach (performance, key, value) {
+        if (strcmp (key, "allow_resource_rewrite") == 0)
+            continue;
+        if (json_object_set (*params, key, value) < 0) {
+            json_decref (*params);
+            *params = NULL;
+            return -1;
+        }
+    }
+    if (json_object_size (*params) == 0) {
+        json_decref (*params);
+        *params = NULL;
+        errno = EINVAL;
+        return -1;
+    }
+    if (get_jobspec_node_count (jobspec, original_nodes) < 0) {
+        json_decref (*params);
+        *params = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -201,9 +339,17 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     flux_t *delegated;
     const char *uri, *strategy = NULL;
     json_t *jobspec;
+    json_t *performance_params = NULL;
     char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
     struct cluster_config *config;
+    struct selection_request request = {0};
+    struct selection_result result;
+    bool is_performance = false;
+    bool allow_resource_rewrite = false;
+    size_t original_nodes = 0;
+
+    memset (&result, 0, sizeof (result));
 
     if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
         return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
@@ -226,11 +372,41 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
     }
-    if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
-        || !(uri = select_cluster (config, strategy))) {
-        flux_log_error (h, "%s: could not select URI", idf58 (*id));
-        return -1;
+    is_performance = strcmp (strategy, "performance") == 0;
+    if (is_performance
+        && get_performance_request_fields (jobspec,
+                                           &performance_params,
+                                           &allow_resource_rewrite,
+                                           &original_nodes)
+               < 0) {
+        flux_log_error (h, "%s: invalid performance delegation request", idf58 (*id));
+        return flux_jobtap_raise_exception (p,
+                                            *id,
+                                            "DelegationFailure",
+                                            0,
+                                            "invalid performance delegation request: %s",
+                                            strerror (errno));
     }
+    request.strategy = strategy;
+    request.jobspec = jobspec;
+    request.performance_params = performance_params;
+    request.allow_resource_rewrite = allow_resource_rewrite;
+    request.original_nodes = original_nodes;
+    config = flux_plugin_aux_get (p, "flux::delegate::selection_config");
+    if (!config || select_cluster_with_result (config, &request, &result) < 0) {
+        flux_log_error (h, "%s: could not select URI", idf58 (*id));
+        json_decref (performance_params);
+        return flux_jobtap_raise_exception (p,
+                                            *id,
+                                            "DelegationFailure",
+                                            0,
+                                            "could not select delegation target: %s%s%s",
+                                            result.reason[0] ? result.reason : strerror (errno),
+                                            result.reason[0] ? ": " : "",
+                                            result.reason[0] ? strerror (errno) : "");
+    }
+    uri = result.uri;
+    json_decref (performance_params);
     if (!(delegated = flux_open (uri, 0))) {
         flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
         return -1;
@@ -258,7 +434,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                      strerror (errno));
         return -1;
     }
-    if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
+    if (!(encoded_jobspec = prepare_jobspec_and_encode (jobspec, &result))
         || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {

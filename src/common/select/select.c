@@ -8,25 +8,43 @@
  * SPDX-License-Identifier: LGPL-3.0
 \************************************************************/
 
+#if HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <ctype.h>
 #include <errno.h>
 #include <float.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <jansson.h>
 
+#include "performance.h"
 #include "select.h"
+
+struct performance_target {
+    char *system;
+    char *uri;
+    size_t nodes;
+    size_t index;
+};
 
 struct cluster_config {
     flux_t *h;
     char **uris;        /* Array of cluster URIs */
     size_t count;       /* Number of clusters */
     bool random_seeded; /* Random seed initialized flag */
+    struct performance_target *performance_targets;
+    size_t performance_target_count;
+    struct performance_provider *performance_provider;
+    bool performance_allow_resource_rewrite;
 };
 
 enum selection_metric_kind {
@@ -42,6 +60,7 @@ struct selection_metric {
     } value;
 };
 
+<<<<<<< HEAD
 static void free_uris (struct cluster_config *config)
 {
     size_t index;
@@ -136,6 +155,306 @@ void selection_destroy (struct cluster_config *config)
 }
 
 static bool selection_has_clusters (struct cluster_config *config, const char *strategy_name)
+=======
+static void set_result_reason (struct selection_result *result, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!result)
+        return;
+    va_start (ap, fmt);
+    vsnprintf (result->reason, sizeof (result->reason), fmt, ap);
+    va_end (ap);
+}
+
+static void selection_result_init (struct selection_result *result)
+{
+    if (result)
+        memset (result, 0, sizeof (*result));
+}
+
+static bool selection_has_clusters (struct cluster_config *config,
+                                    const char *strategy_name)
+>>>>>>> 2907bee (Add performance-based delegation lookup)
+{
+    if (!config || config->count == 0) {
+        errno = ENOENT;
+        if (config) {
+            flux_log (config->h, LOG_ERR, "No clusters available for %s", strategy_name);
+        }
+        return false;
+    }
+    return true;
+}
+
+static void set_result_reason (struct selection_result *result, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!result)
+        return;
+    va_start (ap, fmt);
+    vsnprintf (result->reason, sizeof (result->reason), fmt, ap);
+    va_end (ap);
+}
+
+static void selection_result_init (struct selection_result *result)
+{
+    if (result)
+        memset (result, 0, sizeof (*result));
+}
+
+static void clear_legacy_targets (struct cluster_config *config)
+{
+    size_t index;
+
+    if (!config || !config->uris)
+        return;
+    for (index = 0; index < config->count; index++)
+        free (config->uris[index]);
+    free (config->uris);
+    config->uris = NULL;
+    config->count = 0;
+}
+
+static void clear_performance_targets (struct cluster_config *config)
+{
+    size_t index;
+
+    if (!config || !config->performance_targets)
+        return;
+    for (index = 0; index < config->performance_target_count; index++) {
+        free (config->performance_targets[index].system);
+        free (config->performance_targets[index].uri);
+    }
+    free (config->performance_targets);
+    config->performance_targets = NULL;
+    config->performance_target_count = 0;
+}
+
+static int append_performance_target (struct cluster_config *config,
+                                      const char *system,
+                                      const char *uri,
+                                      size_t nodes)
+{
+    struct performance_target *targets;
+    size_t index;
+
+    if (!config || !system || !uri || nodes == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    index = config->performance_target_count;
+    if (!(targets = realloc (config->performance_targets, (index + 1) * sizeof (*targets))))
+        return -1;
+    config->performance_targets = targets;
+    memset (&config->performance_targets[index], 0, sizeof (config->performance_targets[index]));
+    if (!(config->performance_targets[index].system = strdup (system))
+        || !(config->performance_targets[index].uri = strdup (uri)))
+        return -1;
+    config->performance_targets[index].nodes = nodes;
+    config->performance_targets[index].index = index;
+    config->performance_target_count++;
+    return 0;
+}
+
+static int load_performance_targets (struct cluster_config *config, json_t *delegate_targets)
+{
+    size_t index;
+    json_t *value;
+
+    if (!delegate_targets)
+        return 0;
+    if (!json_is_array (delegate_targets)) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "delegate_targets must be an array");
+        return -1;
+    }
+    json_array_foreach (delegate_targets, index, value) {
+        const char *system = NULL;
+        const char *uri = NULL;
+        json_int_t nodes;
+
+        if (json_unpack (value,
+                         "{s:s s:s s:I}",
+                         "system",
+                         &system,
+                         "uri",
+                         &uri,
+                         "nodes",
+                         &nodes)
+            < 0
+            || nodes <= 0) {
+            errno = EINVAL;
+            flux_log (config->h,
+                      LOG_ERR,
+                      "delegate_targets[%zu] must define system, uri, and positive nodes",
+                      index);
+            return -1;
+        }
+        if (append_performance_target (config, system, uri, (size_t)nodes) < 0) {
+            flux_log_error (config->h, "append_performance_target");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int load_performance_config (struct cluster_config *config, json_t *performance)
+{
+    const char *provider = NULL;
+    const char *path = NULL;
+    bool allow_resource_rewrite = false;
+    char errbuf[256] = "";
+
+    if (!performance)
+        return 0;
+    if (!json_is_object (performance)) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "performance config must be a table");
+        return -1;
+    }
+    if (json_unpack (performance,
+                     "{s?s s?s s?b}",
+                     "provider",
+                     &provider,
+                     "path",
+                     &path,
+                     "allow_resource_rewrite",
+                     &allow_resource_rewrite)
+        < 0) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "invalid performance config");
+        return -1;
+    }
+    if (!provider)
+        return 0;
+    if (strcmp (provider, "toml") != 0) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "unsupported performance provider %s", provider);
+        return -1;
+    }
+    if (!path) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "performance provider toml requires path");
+        return -1;
+    }
+    if (performance_provider_load_from_toml (path,
+                                             &config->performance_provider,
+                                             errbuf,
+                                             sizeof (errbuf))
+        < 0) {
+        flux_log (config->h,
+                  LOG_ERR,
+                  "%s",
+                  errbuf[0] ? errbuf : "failed to load performance provider");
+        return -1;
+    }
+    config->performance_allow_resource_rewrite = allow_resource_rewrite;
+    return 0;
+}
+
+static int load_config (struct cluster_config *config)
+{
+    flux_error_t error;
+    json_t *delegate = NULL;
+    json_t *delegate_targets = NULL;
+    json_t *performance = NULL;
+    const flux_conf_t *conf;
+    size_t index;
+    json_t *value;
+
+    if (!(conf = flux_get_conf (config->h))) {
+        flux_log_error (config->h, "flux_get_conf");
+        return -1;
+    }
+
+    if (flux_conf_unpack (conf,
+                          &error,
+                          "{s?o s?o s?o}",
+                          "delegate",
+                          &delegate,
+                          "delegate_targets",
+                          &delegate_targets,
+                          "performance",
+                          &performance)
+        < 0) {
+        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
+        return -1;
+    }
+
+    if (!delegate || !json_is_array (delegate)) {
+        config->count = 0;
+        config->uris = NULL;
+    } else {
+        config->count = json_array_size (delegate);
+        if (config->count == 0) {
+            config->uris = NULL;
+        } else {
+            if (!(config->uris = calloc (config->count, sizeof (char *)))) {
+                flux_log_error (config->h, "calloc");
+                return -1;
+            }
+
+            json_array_foreach (delegate, index, value) {
+                const char *uri;
+
+                if (!json_is_string (value)) {
+                    flux_log (config->h, LOG_ERR, "delegate array contains non-string");
+                    goto error;
+                }
+                uri = json_string_value (value);
+                if (!(config->uris[index] = strdup (uri))) {
+                    flux_log_error (config->h, "strdup");
+                    goto error;
+                }
+            }
+        }
+    }
+
+    if (load_performance_targets (config, delegate_targets) < 0
+        || load_performance_config (config, performance) < 0)
+        goto error;
+
+    return 0;
+error:
+    clear_legacy_targets (config);
+    clear_performance_targets (config);
+    performance_provider_destroy (config->performance_provider);
+    config->performance_provider = NULL;
+    return -1;
+}
+
+struct cluster_config *selection_init (flux_t *h)
+{
+    struct cluster_config *config;
+
+    if (!h) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (!(config = calloc (1, sizeof (*config))))
+        return NULL;
+    config->h = h;
+    if (load_config (config) < 0) {
+        selection_destroy (config);
+        return NULL;
+    }
+    return config;
+}
+
+void selection_destroy (struct cluster_config *config)
+{
+    if (!config)
+        return;
+    clear_legacy_targets (config);
+    clear_performance_targets (config);
+    performance_provider_destroy (config->performance_provider);
+    free (config);
+}
+
+static bool selection_has_clusters (struct cluster_config *config,
+                                    const char *strategy_name)
 {
     if (!config || config->count == 0) {
         errno = ENOENT;
@@ -429,4 +748,393 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
     if (strncmp (strategy, "assign", 6) == 0)
         return select_assign_cluster (config, strategy);
     return NULL;
+}
+
+static struct performance_target *find_performance_target_by_system (struct cluster_config *config,
+                                                                     const char *system,
+                                                                     size_t nodes)
+{
+    if (!config || !system)
+        return NULL;
+    for (size_t i = 0; i < config->performance_target_count; i++) {
+        if (strcmp (config->performance_targets[i].system, system) != 0)
+            continue;
+        if (nodes > config->performance_targets[i].nodes)
+            continue;
+        return &config->performance_targets[i];
+    }
+    return NULL;
+}
+
+static bool performance_candidate_is_better (struct performance_candidate *candidate,
+                                             struct performance_target *candidate_target,
+                                             struct performance_candidate *best,
+                                             struct performance_target *best_target)
+{
+    if (!best)
+        return true;
+    if (candidate->execution_time != best->execution_time)
+        return candidate->execution_time < best->execution_time;
+    if (candidate_target->index != best_target->index)
+        return candidate_target->index < best_target->index;
+    if (candidate->nodes != best->nodes)
+        return candidate->nodes < best->nodes;
+    return candidate->row_index < best->row_index;
+}
+
+static int select_performance_cluster (struct cluster_config *config,
+                                       const struct selection_request *request,
+                                       struct selection_result *result)
+{
+    struct performance_query query = {0};
+    struct performance_candidate **matches = NULL;
+    size_t match_count = 0;
+    struct performance_candidate *best = NULL;
+    struct performance_target *best_target = NULL;
+    char errbuf[256] = "";
+
+    if (!request || !request->performance_params) {
+        errno = EINVAL;
+        set_result_reason (result, "performance requires typed job parameters");
+        return -1;
+    }
+    if (!config->performance_provider) {
+        errno = ENOENT;
+        set_result_reason (result, "performance provider is not configured");
+        return -1;
+    }
+    query.params = request->performance_params;
+    if (performance_provider_lookup (config->performance_provider,
+                                     &query,
+                                     &matches,
+                                     &match_count,
+                                     errbuf,
+                                     sizeof (errbuf))
+        < 0) {
+        set_result_reason (result, "performance lookup failed: %s", errbuf);
+        return -1;
+    }
+    for (size_t i = 0; i < match_count; i++) {
+        struct performance_target *target = find_performance_target_by_system (config,
+                                                                               matches[i]->system,
+                                                                               matches[i]->nodes);
+        if (!target)
+            continue;
+        if (performance_candidate_is_better (matches[i], target, best, best_target)) {
+            best = matches[i];
+            best_target = target;
+        }
+    }
+    free (matches);
+    if (!best || !best_target) {
+        errno = ENOENT;
+        set_result_reason (result, "performance found no configured matching target");
+        return -1;
+    }
+    result->uri = best_target->uri;
+    result->system = best_target->system;
+    result->target_index = best_target->index;
+    result->selected_nodes = best->nodes;
+    result->original_nodes = request->original_nodes;
+    result->predicted_execution_time = best->execution_time;
+    result->performance_candidate_id = best->id;
+    result->requires_jobspec_rewrite = request->original_nodes != 0
+                                       && best->nodes != request->original_nodes;
+    result->rewrite_allowed = config->performance_allow_resource_rewrite
+                              && request->allow_resource_rewrite;
+    if (result->requires_jobspec_rewrite && !result->rewrite_allowed) {
+        errno = EPERM;
+        set_result_reason (result,
+                           "performance selected nodes=%zu but resource rewrite is not allowed",
+                           best->nodes);
+        return -1;
+    }
+    set_result_reason (result,
+                       "performance selected system=%s nodes=%zu execution_time=%lf",
+                       best->system,
+                       best->nodes,
+                       best->execution_time);
+    flux_log (config->h,
+              LOG_INFO,
+              "performance selected system=%s target=%zu nodes=%zu execution_time=%lf candidate=%s",
+              best->system,
+              best_target->index,
+              best->nodes,
+              best->execution_time,
+              best->id ? best->id : "");
+    return 0;
+}
+
+static size_t legacy_uri_index (struct cluster_config *config, const char *uri)
+{
+    for (size_t i = 0; config && i < config->count; i++) {
+        if (config->uris[i] == uri)
+            return i;
+    }
+    return SIZE_MAX;
+}
+
+int select_cluster_with_result (struct cluster_config *config,
+                                const struct selection_request *request,
+                                struct selection_result *result)
+{
+    const char *uri;
+
+    if (!request || !request->strategy || !config || !result) {
+        errno = EINVAL;
+        return -1;
+    }
+    selection_result_init (result);
+    if (strcmp (request->strategy, "performance") == 0)
+        return select_performance_cluster (config, request, result);
+    if (!(uri = select_cluster (config, request->strategy)))
+        return -1;
+    result->uri = uri;
+    result->target_index = legacy_uri_index (config, uri);
+    return 0;
+}
+
+static void clear_legacy_targets (struct cluster_config *config)
+{
+    if (!config || !config->uris)
+        return;
+    for (size_t i = 0; i < config->count; i++)
+        free (config->uris[i]);
+    free (config->uris);
+    config->uris = NULL;
+    config->count = 0;
+}
+
+static void clear_performance_targets (struct cluster_config *config)
+{
+    if (!config || !config->performance_targets)
+        return;
+    for (size_t i = 0; i < config->performance_target_count; i++) {
+        free (config->performance_targets[i].system);
+        free (config->performance_targets[i].uri);
+    }
+    free (config->performance_targets);
+    config->performance_targets = NULL;
+    config->performance_target_count = 0;
+}
+
+static int append_performance_target (struct cluster_config *config,
+                                      const char *system,
+                                      const char *uri,
+                                      size_t nodes)
+{
+    struct performance_target *targets;
+    size_t index = config->performance_target_count;
+
+    if (!system || !uri || nodes == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!(targets = realloc (config->performance_targets, (index + 1) * sizeof (*targets))))
+        return -1;
+    config->performance_targets = targets;
+    memset (&config->performance_targets[index], 0, sizeof (config->performance_targets[index]));
+    if (!(config->performance_targets[index].system = strdup (system)))
+        return -1;
+    if (!(config->performance_targets[index].uri = strdup (uri)))
+        return -1;
+    config->performance_targets[index].nodes = nodes;
+    config->performance_targets[index].index = index;
+    config->performance_target_count++;
+    return 0;
+}
+
+static int load_performance_targets (struct cluster_config *config, json_t *delegate_targets)
+{
+    size_t index;
+    json_t *value;
+
+    if (!delegate_targets)
+        return 0;
+    if (!json_is_array (delegate_targets)) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "delegate_targets must be an array");
+        return -1;
+    }
+    json_array_foreach (delegate_targets, index, value) {
+        const char *system = NULL;
+        const char *uri = NULL;
+        json_int_t nodes;
+
+        if (json_unpack (value,
+                         "{s:s s:s s:I}",
+                         "system",
+                         &system,
+                         "uri",
+                         &uri,
+                         "nodes",
+                         &nodes)
+            < 0
+            || nodes <= 0) {
+            errno = EINVAL;
+            flux_log (config->h,
+                      LOG_ERR,
+                      "delegate_targets[%zu] must define system, uri, and positive nodes",
+                      index);
+            return -1;
+        }
+        if (append_performance_target (config, system, uri, (size_t)nodes) < 0) {
+            flux_log_error (config->h, "append_performance_target");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int load_performance_config (struct cluster_config *config, json_t *performance)
+{
+    const char *provider = NULL;
+    const char *path = NULL;
+    bool allow_resource_rewrite = false;
+    char errbuf[256] = "";
+
+    if (!performance)
+        return 0;
+    if (!json_is_object (performance)) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "performance config must be a table");
+        return -1;
+    }
+    if (json_unpack (performance,
+                     "{s?s s?s s?b}",
+                     "provider",
+                     &provider,
+                     "path",
+                     &path,
+                     "allow_resource_rewrite",
+                     &allow_resource_rewrite)
+        < 0) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "invalid performance config");
+        return -1;
+    }
+    if (!provider)
+        return 0;
+    if (strcmp (provider, "toml") != 0) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "unsupported performance provider %s", provider);
+        return -1;
+    }
+    if (!path) {
+        errno = EINVAL;
+        flux_log (config->h, LOG_ERR, "performance provider toml requires path");
+        return -1;
+    }
+    if (performance_provider_load_from_toml (path,
+                                             &config->performance_provider,
+                                             errbuf,
+                                             sizeof (errbuf))
+        < 0) {
+        flux_log (config->h, LOG_ERR, "%s", errbuf[0] ? errbuf : "failed to load performance provider");
+        return -1;
+    }
+    config->performance_allow_resource_rewrite = allow_resource_rewrite;
+    return 0;
+}
+
+/* Load cluster URIs from the Flux runtime configuration.
+ * Expects a top-level "delegate" key whose value is an array of URI
+ * strings.  An absent or empty array yields a zero-cluster config.
+ */
+static int load_config (struct cluster_config *config)
+{
+    flux_error_t error;
+    json_t *delegate = NULL;
+    json_t *delegate_targets = NULL;
+    json_t *performance = NULL;
+    const flux_conf_t *conf;
+    size_t index;
+    json_t *value;
+
+    if (!(conf = flux_get_conf (config->h))) {
+        flux_log_error (config->h, "flux_get_conf");
+        return -1;
+    }
+
+    if (flux_conf_unpack (conf,
+                          &error,
+                          "{s?o s?o s?o}",
+                          "delegate",
+                          &delegate,
+                          "delegate_targets",
+                          &delegate_targets,
+                          "performance",
+                          &performance)
+        < 0) {
+        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
+        return -1;
+    }
+
+    if (!delegate || !json_is_array (delegate)) {
+        config->count = 0;
+        config->uris = NULL;
+    } else {
+        config->count = json_array_size (delegate);
+        if (config->count == 0) {
+            config->uris = NULL;
+        } else {
+            if (!(config->uris = calloc (config->count, sizeof (char *)))) {
+                flux_log_error (config->h, "calloc");
+                return -1;
+            }
+
+            json_array_foreach (delegate, index, value) {
+                const char *uri;
+                if (!json_is_string (value)) {
+                    flux_log (config->h, LOG_ERR, "delegate array contains non-string");
+                    goto error;
+                }
+                uri = json_string_value (value);
+                if (!(config->uris[index] = strdup (uri))) {
+                    flux_log_error (config->h, "strdup");
+                    goto error;
+                }
+            }
+        }
+    }
+
+    if (load_performance_targets (config, delegate_targets) < 0
+        || load_performance_config (config, performance) < 0)
+        goto error;
+
+    return 0;
+error:
+    clear_legacy_targets (config);
+    clear_performance_targets (config);
+    performance_provider_destroy (config->performance_provider);
+    config->performance_provider = NULL;
+    return -1;
+}
+
+struct cluster_config *selection_init (flux_t *h)
+{
+    struct cluster_config *config;
+
+    if (!h) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (!(config = calloc (1, sizeof (*config))))
+        return NULL;
+    config->h = h;
+    if (load_config (config) < 0) {
+        selection_destroy (config);
+        return NULL;
+    }
+    return config;
+}
+
+void selection_destroy (struct cluster_config *config)
+{
+    if (!config)
+        return;
+    clear_legacy_targets (config);
+    clear_performance_targets (config);
+    performance_provider_destroy (config->performance_provider);
+    free (config);
 }
