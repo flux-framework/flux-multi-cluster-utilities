@@ -474,12 +474,14 @@ static const struct flux_plugin_handler tab[] = {
 
 int flux_plugin_init (flux_plugin_t *p)
 {
+    const char *plugin_config;
     struct cluster_config *config;
     flux_t *h = flux_jobtap_get_flux (p);
 
     if (!h
         || flux_plugin_register (p, "delegate", tab) < 0
-        || !(config = selection_init(h))
+        || !(plugin_config = flux_plugin_get_conf (p))
+        || !(config = selection_init (h, plugin_config))
         || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
         return -1;
     }

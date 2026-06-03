@@ -52,30 +52,10 @@ static void free_uris (struct cluster_config *config)
     config->count = 0;
 }
 
-static int load_config (struct cluster_config *config)
+int parse_uris (json_t *delegate, struct cluster_config *config)
 {
-    flux_error_t error;
-    json_t *delegate = NULL;
-    const flux_conf_t *conf;
     size_t index;
     json_t *value;
-
-    if (!(conf = flux_get_conf (config->h))) {
-        flux_log_error (config->h, "flux_get_conf");
-        return -1;
-    }
-
-    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
-        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
-        return -1;
-    }
-
-    if (!delegate || !json_is_array (delegate)) {
-        config->count = 0;
-        config->uris = NULL;
-        return 0;
-    }
-
     config->count = json_array_size (delegate);
     if (!(config->uris = calloc (config->count, sizeof (char *)))) {
         flux_log_error (config->h, "calloc");
@@ -96,12 +76,75 @@ static int load_config (struct cluster_config *config)
     }
     return 0;
 error:
-    config->count = index;
-    free_uris (config);
+
+    if (config->uris) {
+        for (size_t i = 0; i < index; i++)
+            free (config->uris[i]);
+        free (config->uris);
+        config->uris = NULL;
+    }
+    config->count = 0;
     return -1;
 }
 
-struct cluster_config *selection_init (flux_t *h)
+/* Load cluster URIs from the Flux runtime configuration.
+ * Expects a top-level "delegate" key whose value is an array of URI
+ * strings.  An absent or empty array yields a zero-cluster config.
+ */
+
+static int load_config (const char *plugin_config, struct cluster_config *config)
+{
+    flux_error_t error;
+    json_error_t json_error;
+    char *file_path = NULL;
+    json_t *delegate = NULL;
+    json_t *plugin_config_json = NULL;
+    json_t *plugin_config_data = NULL;
+    const flux_conf_t *conf = NULL;
+    int rc = -1;
+
+    if (!(plugin_config_json = json_loads (plugin_config, 0, &json_error))) {
+        flux_log (config->h,
+                  LOG_ERR,
+                  "Unable to parse plugin config into JSON: %s",
+                  json_error.text);
+        goto out;
+    }
+    plugin_config_data = json_object_get (plugin_config_json, "config");
+    if (!json_is_string (plugin_config_data)) {
+        flux_log (config->h, LOG_ERR, "invalid config from plugin");
+        goto out;
+    }
+    if (!(file_path = strdup (json_string_value (plugin_config_data)))) {
+        flux_log_error (config->h, "strdup");
+        goto out;
+    }
+    json_decref (plugin_config_json);
+    plugin_config_json = NULL;
+
+    if (!(conf = flux_conf_parse (file_path, &error))) {
+        flux_log (config->h, LOG_ERR, "flux_conf_parse: %s", error.text);
+        goto out;
+    }
+    if (flux_conf_unpack (conf, &error, "{s?o}", "clusters", &delegate) < 0) {
+        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
+        goto out;
+    }
+    if (!delegate || !json_is_array (delegate)) {
+        config->count = 0;
+        config->uris = NULL;
+        rc = 0;
+        goto out;
+    }
+    rc = parse_uris (delegate, config);
+out:
+    free (file_path);
+    json_decref (plugin_config_json);
+    flux_conf_decref (conf);
+    return rc;
+}
+
+struct cluster_config *selection_init (flux_t *h, const char *plugin_config)
 {
     struct cluster_config *config;
 
@@ -112,7 +155,7 @@ struct cluster_config *selection_init (flux_t *h)
     if (!(config = calloc (1, sizeof (*config))))
         return NULL;
     config->h = h;
-    if (load_config (config) < 0) {
+    if (load_config (plugin_config, config) < 0) {
         selection_destroy (config);
         return NULL;
     }
@@ -127,16 +170,12 @@ void selection_destroy (struct cluster_config *config)
     free (config);
 }
 
-static bool selection_has_clusters (struct cluster_config *config,
-                                    const char *strategy_name)
+static bool selection_has_clusters (struct cluster_config *config, const char *strategy_name)
 {
     if (!config || config->count == 0) {
         errno = ENOENT;
         if (config) {
-            flux_log (config->h,
-                      LOG_ERR,
-                      "No clusters available for %s",
-                      strategy_name);
+            flux_log (config->h, LOG_ERR, "No clusters available for %s", strategy_name);
         }
         return false;
     }
@@ -185,7 +224,8 @@ static int query_max_match_time (flux_t *h, const char *uri, double *value)
         flux_log (h, LOG_ERR, "Failed to open flux instance %s", uri);
         goto out;
     }
-    if (!(future = flux_rpc (remote, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+    if (!(future =
+              flux_rpc (remote, "sched-fluxion-resource.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
         flux_log (h, LOG_ERR, "Failed to query match statistics for %s", uri);
         goto out;
     }
@@ -206,7 +246,7 @@ static int query_max_match_time (flux_t *h, const char *uri, double *value)
                              &max,
                              "avg",
                              &avg)
-            < 0) {
+        < 0) {
         flux_log (h, LOG_ERR, "Failed to unpack match statistics for %s", uri);
         goto out;
     }
@@ -234,7 +274,8 @@ static int query_pending_jobs (flux_t *h, const char *uri, int64_t *value)
         flux_log (h, LOG_ERR, "Failed to open flux instance %s", uri);
         goto out;
     }
-    if (!(future = flux_rpc (remote, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
+    if (!(future =
+              flux_rpc (remote, "sched-fluxion-qmanager.stats-get", NULL, FLUX_NODEID_ANY, 0))) {
         flux_log (h, LOG_ERR, "Failed to query queue statistics for %s", uri);
         goto out;
     }
@@ -248,7 +289,7 @@ static int query_pending_jobs (flux_t *h, const char *uri, int64_t *value)
                              "scheduled_queues",
                              "running",
                              &running)
-            < 0) {
+        < 0) {
         flux_log (h, LOG_ERR, "Failed to unpack queue statistics for %s", uri);
         goto out;
     }
@@ -272,13 +313,13 @@ static int query_cluster_metric (flux_t *h,
 
     metric->kind = kind;
     switch (kind) {
-    case SELECTION_METRIC_MATCH_TIME:
-        return query_max_match_time (h, uri, &metric->value.match_time);
-    case SELECTION_METRIC_PENDING_JOBS:
-        return query_pending_jobs (h, uri, &metric->value.pending_jobs);
-    default:
-        errno = EINVAL;
-        return -1;
+        case SELECTION_METRIC_MATCH_TIME:
+            return query_max_match_time (h, uri, &metric->value.match_time);
+        case SELECTION_METRIC_PENDING_JOBS:
+            return query_pending_jobs (h, uri, &metric->value.pending_jobs);
+        default:
+            errno = EINVAL;
+            return -1;
     }
 }
 
@@ -305,11 +346,7 @@ static const char *select_cluster_by_metric (struct cluster_config *config,
     for (index = 0; index < config->count; index++) {
         struct selection_metric metric;
 
-        if (query_cluster_metric (config->h,
-                                  config->uris[index],
-                                  best_metric->kind,
-                                  &metric)
-                < 0)
+        if (query_cluster_metric (config->h, config->uris[index], best_metric->kind, &metric) < 0)
             continue;
         if (!best_uri || selection_metric_is_better (&metric, best_metric)) {
             *best_metric = metric;
@@ -331,7 +368,8 @@ static const char *select_shortest_match_cluster (struct cluster_config *config)
     };
     const char *best_uri = select_cluster_by_metric (config,
                                                      "shortest_match",
-                                                     "Unable to compute shortest_match for any cluster",
+                                                     "Unable to compute shortest_match for any "
+                                                     "cluster",
                                                      &best_metric);
 
     if (!best_uri) {
@@ -353,7 +391,8 @@ static const char *select_least_pending_cluster (struct cluster_config *config)
     };
     const char *best_uri = select_cluster_by_metric (config,
                                                      "least_pending",
-                                                     "Unable to compute least_pending for any cluster",
+                                                     "Unable to compute least_pending for any "
+                                                     "cluster",
                                                      &best_metric);
 
     if (!best_uri) {
@@ -381,4 +420,3 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
         return select_shortest_match_cluster (config);
     return NULL;
 }
-
