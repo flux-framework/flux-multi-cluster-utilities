@@ -29,6 +29,22 @@ The plugin can be loaded with the command below.
 Note that an absolute path needs to be specified here. 
 `flux jobtap load $(realpath path/to/plugin/delegate.so)`
 
+For selection-based delegation, pass a TOML config file with a top-level
+`clusters` string array.
+
+```toml
+clusters = [
+     "ssh://cluster-a/path/to/local-0",
+     "ssh://cluster-b/path/to/local-0"
+]
+```
+
+Load the plugin with that configuration as follows.
+
+```
+flux jobtap load $(realpath path/to/plugin/delegate.so) config=$(realpath path/to/clusters.toml)
+```
+
 ### Interactive Testing on Peer-to-Peer Flux Instances
 
 Here, we show an example of peer-to-peer flux instances, residing on the same cluster
@@ -157,6 +173,73 @@ $ flux job attach f7PiE17dH
 corona189
 corona190
 ```
+
+### Examples
+
+The `examples/` directory contains scripts demonstrating various delegation policies and multi-system configurations.
+
+#### Prerequisites
+
+All examples require:
+- A built and installed version of this repository (`make && make install`)
+- An active Flux allocation (e.g., `flux alloc -N4` or `salloc -N4` followed by `flux start`)
+- The `delegate.so` plugin at `<install-path>/lib/flux/job-manager/plugins/delegate.so`
+
+---
+
+##### Single-System Delegation
+
+| Script | Description |
+|--------|-------------|
+| [`random-delegation-3instances.sh`](examples/random-delegation-3instances.sh) | Demonstrates the **random** delegation policy. Creates one source Flux instance and three 1-node target sub-instances, then submits a job that gets randomly delegated to one of the three targets. |
+| [`shortest-match-delegation-3instances.sh`](examples/shortest-match-delegation-3instances.sh) | Demonstrates the **shortest_match** delegation policy. Creates contention by loading two jobs onto target-0, then submits a job that selects the least-loaded target based on match times. |
+| [`least-pending-delegation-3instances.sh`](examples/least-pending-delegation-3instances.sh) | Demonstrates the **least_pending** delegation policy. Creates two pending jobs on target-0, then submits a job that selects an idle target instead. |
+
+**Usage:**
+```bash
+cd examples
+bash random-delegation-3instances.sh
+# or
+bash shortest-match-delegation-3instances.sh
+# or
+bash least-pending-delegation-3instances.sh
+```
+
+Each script creates its own temporary `*-clusters.toml` config file and cleans up on exit (set `KEEP_CONFIG=1` to retain it).
+
+---
+
+##### Multi-System Delegation
+
+| Script | Description |
+|--------|-------------|
+| [`job-delegation.sh`](examples/job-delegation.sh) | Demonstrates real multi-system Flux job delegation across Tuolumne, Corona, and Tioga. Submits a trace of 5 jobs with mixed policies (`random`, `least_pending`, `shortest_match`), allocates target sub-instances on each system via a layout config, and produces a per-job and per-target summary report. |
+
+**Usage:**
+```bash
+cd examples
+bash job-delegation.sh          # Uses default multisystem-layout.conf
+bash job-delegation.sh layout.conf   # Use a custom layout file
+```
+
+**Layout configuration files:**
+
+| File | Description |
+|------|-------------|
+| [`layout.conf`](examples/layout.conf) | Single-system layout: 1 source node + 3 target sub-instances (1 node each) |
+| [`multisystem-layout.conf`](examples/multisystem-layout.conf) | Three-system layout: Tuolumne (2×1 node) + Corona (3×1 node) + Tioga (2×1 node) |
+| [`cluster-layout.conf`](examples/cluster-layout.conf) | Cluster layout for param-based tests: Tuolumne (2×1 node) + Corona (2×1 node) + Tioga (1×1 node) |
+
+**Environment variables** (override defaults in `job-delegation.sh`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOURCE_NODES` | `1` | Nodes for source instance |
+| `BANK` | `fractale` | Default bank for all systems |
+| `TUO_PARTITION` | `pdebug` | Tuolumne partition |
+| `CORONA_HOST` | `corona.llnl.gov` | Corona cluster hostname |
+| `TIOGA_HOST` | `tioga.llnl.gov` | Tioga cluster hostname |
+| `WAIT_TIMEOUT` | `180` | Seconds to wait for jobs |
 
 ### Testing Using Docker
 
