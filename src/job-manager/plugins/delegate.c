@@ -213,7 +213,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s?s} s:o}",
+                                "{s:I s:{s:s} s:o}",
                                 "id",
                                 id,
                                 "dependency",
@@ -232,11 +232,22 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
         || !(uri = select_cluster (config, strategy))) {
         flux_log_error (h, "%s: could not select URI", idf58 (*id));
-        return -1;
+        return flux_jobtap_raise_exception (p,
+                                            *id,
+                                            "DelegationFailure",
+                                            0,
+                                            "could not select delegation target: %s",
+                                            strerror (errno));
     }
     if (!(delegated = flux_open (uri, 0))) {
         flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
-        return -1;
+        return flux_jobtap_raise_exception (p,
+                                            *id,
+                                            "DelegationFailure",
+                                            0,
+                                            "could not open delegation URI %s: %s",
+                                            uri,
+                                            strerror (errno));
     }
     if (flux_jobtap_dependency_add (p, *id, "delegated") < 0
         || flux_jobtap_job_aux_set (p,
@@ -479,8 +490,12 @@ int flux_plugin_init (flux_plugin_t *p)
 
     if (!h
         || flux_plugin_register (p, "delegate", tab) < 0
-        || !(config = selection_init(h))
-        || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
+        || !(config = selection_init (h))
+        || flux_plugin_aux_set (p,
+                                "flux::delegate::selection_config",
+                                config,
+                                (flux_free_f)selection_destroy)
+               < 0) {
         return -1;
     }
     return 0;

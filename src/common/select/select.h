@@ -10,7 +10,8 @@
 
 #include <flux/core.h>
 
-/* Initialize the selection logic.
+/* Initialize the selection logic. Cluster URIs are loaded from the
+ * Flux runtime configuration (the "delegate" array of strings).
  */
 struct cluster_config *selection_init (flux_t *h);
 
