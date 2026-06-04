@@ -51,8 +51,8 @@ static void wait_callback (flux_future_t *f, void *arg)
         return;
     }
     if (success) {
-        if (flux_jobtap_dependency_remove (p, *id, "delegated") < 0) {
-            errstr = "failed to remove dependency";
+        if (flux_jobtap_reprioritize_job (p, *id, 16) < 0) {
+            errstr = "failed to update priority";
         } else {
             flux_future_destroy (f);
             return;
@@ -154,54 +154,13 @@ static void submit_callback (flux_future_t *f, void *arg)
     flux_future_destroy (f);
 }
 
-/*
- * Remove all dependencies from jobspec.
- *
- * Dependencies may reference jobids that the instance the job is
- * being sent to does not recognize.
- *
- * Also, if the 'delegate' dependency in particular were not removed,
- * one of two things would happen. If the instance the job is sent to
- * does not have this jobtap plugin loaded, then the job would be
- * rejected. Otherwise, if the instance DOES have this jobtap plugin
- * loaded, it would attempt to delegate to itself in an infinite
- * loop.
- */
-static char *remove_dependency_and_encode (json_t *jobspec)
-{
-    char *encoded_jobspec;
-    json_t *dependency_list = NULL;
-
-    if (!(jobspec = json_deep_copy (jobspec))) {
-        return NULL;
-    }
-    if (json_unpack (jobspec,
-                     "{s:{s:{s:o}}}",
-                     "attributes",
-                     "system",
-                     "dependencies",
-                     &dependency_list)
-            < 0
-        || json_array_clear (dependency_list) < 0) {
-        json_decref (jobspec);
-        return NULL;
-    }
-    encoded_jobspec = json_dumps (jobspec, 0);
-    json_decref (jobspec);
-    return encoded_jobspec;
-}
-
-/*
- * Handle job.dependency.delegate requests
- */
-static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
+static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
     flux_jobid_t *id;
     flux_t *delegated;
-    const char *uri, *strategy = NULL;
+    const char *uri, *strategy = "random";
     json_t *jobspec;
-    char *encoded_jobspec = NULL;
     flux_future_t *jobid_future = NULL;
     struct cluster_config *config;
 
@@ -210,12 +169,9 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
-                                "{s:I s:{s?s} s:o}",
+                                "{s:I s:o}",
                                 "id",
                                 id,
-                                "dependency",
-                                "value",
-                                &strategy,
                                 "jobspec",
                                 &jobspec)
             < 0
@@ -235,7 +191,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
         flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
         return -1;
     }
-    if (flux_jobtap_dependency_add (p, *id, "delegated") < 0
+    if (flux_jobtap_reprioritize_job (p, *id, 0) < 0
         || flux_jobtap_job_aux_set (p,
                                     *id,
                                     "flux::delegated_handle",
@@ -258,8 +214,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                      strerror (errno));
         return -1;
     }
-    if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
-        || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
+    if (!(jobid_future = flux_job_submit (delegated, json_dumps(jobspec,0), 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {
         flux_log_error (h,
@@ -267,10 +222,10 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                         "instance",
                         idf58 (*id));
         flux_future_destroy (jobid_future);
-        free (encoded_jobspec);
+        // free (jobspec);
         return -1;
     }
-    free (encoded_jobspec);
+    // free (jobspec);
     return 0;
 }
 
@@ -463,9 +418,9 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
 }
 
 static const struct flux_plugin_handler tab[] = {
-    {"job.dependency.delegate", depend_cb, NULL},
     {"job.state.sched", sched_cb, NULL},
     {"job.state.run", run_cb, NULL},
+    {"job.state.priority", priority_cb, NULL},
     {0},
 };
 
