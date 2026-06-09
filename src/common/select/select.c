@@ -8,7 +8,10 @@
  * SPDX-License-Identifier: LGPL-3.0
 \************************************************************/
 
+#include <ctype.h>
 #include <errno.h>
+#include <float.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -77,6 +80,10 @@ static int load_config (struct cluster_config *config)
     }
 
     config->count = json_array_size (delegate);
+    if (config->count == 0) {
+        config->uris = NULL;
+        return 0;
+    }
     if (!(config->uris = calloc (config->count, sizeof (char *)))) {
         flux_log_error (config->h, "calloc");
         return -1;
@@ -94,6 +101,7 @@ static int load_config (struct cluster_config *config)
             goto error;
         }
     }
+
     return 0;
 error:
     config->count = index;
@@ -363,6 +371,49 @@ static const char *select_least_pending_cluster (struct cluster_config *config)
     return best_uri;
 }
 
+static const char *select_assign_cluster (struct cluster_config *config, const char *strategy)
+{
+    size_t idx = 0;
+    const char *suffix;
+    char *endptr;
+    unsigned long val;
+
+    if (!selection_has_clusters (config, "assign"))
+        return NULL;
+
+    suffix = strchr (strategy, ':');
+    if (suffix) {
+        errno = 0;
+        val = strtoul (suffix + 1, &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || val > SIZE_MAX) {
+            flux_log (config->h,
+                      LOG_ERR,
+                      "assign: invalid sub-instance ID '%s': %s",
+                      suffix + 1,
+                      strerror (errno));
+            return NULL;
+        }
+        idx = (size_t)val;
+    }
+
+    if (idx >= config->count) {
+        flux_log (config->h,
+                  LOG_ERR,
+                  "assign: sub-instance ID %zu out of range (0..%zu)",
+                  idx,
+                  config->count - 1);
+        errno = ERANGE;
+        return NULL;
+    }
+
+    flux_log (config->h,
+              LOG_INFO,
+              "Selected cluster %zu by assign policy: %s",
+              idx,
+              config->uris[idx]);
+    return config->uris[idx];
+}
+
 const char *select_cluster (struct cluster_config *config, const char *strategy)
 {
     if (!config) {
@@ -375,5 +426,7 @@ const char *select_cluster (struct cluster_config *config, const char *strategy)
         return select_least_pending_cluster (config);
     if (strcmp (strategy, "shortest_match") == 0)
         return select_shortest_match_cluster (config);
+    if (strncmp (strategy, "assign", 6) == 0)
+        return select_assign_cluster (config, strategy);
     return NULL;
 }
