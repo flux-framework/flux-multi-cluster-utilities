@@ -8,7 +8,10 @@
  * SPDX-License-Identifier: LGPL-3.0
 \************************************************************/
 
+#include <ctype.h>
 #include <errno.h>
+#include <float.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -38,94 +41,6 @@ struct selection_metric {
         int64_t pending_jobs;
     } value;
 };
-
-static void free_uris (struct cluster_config *config)
-{
-    size_t index;
-
-    if (!config || !config->uris)
-        return;
-    for (index = 0; index < config->count; index++)
-        free (config->uris[index]);
-    free (config->uris);
-    config->uris = NULL;
-    config->count = 0;
-}
-
-static int load_config (struct cluster_config *config)
-{
-    flux_error_t error;
-    json_t *delegate = NULL;
-    const flux_conf_t *conf;
-    size_t index;
-    json_t *value;
-
-    if (!(conf = flux_get_conf (config->h))) {
-        flux_log_error (config->h, "flux_get_conf");
-        return -1;
-    }
-
-    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
-        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
-        return -1;
-    }
-
-    if (!delegate || !json_is_array (delegate)) {
-        config->count = 0;
-        config->uris = NULL;
-        return 0;
-    }
-
-    config->count = json_array_size (delegate);
-    if (!(config->uris = calloc (config->count, sizeof (char *)))) {
-        flux_log_error (config->h, "calloc");
-        return -1;
-    }
-
-    json_array_foreach (delegate, index, value) {
-        const char *uri;
-        if (!json_is_string (value)) {
-            flux_log (config->h, LOG_ERR, "delegate array contains non-string");
-            goto error;
-        }
-        uri = json_string_value (value);
-        if (!(config->uris[index] = strdup (uri))) {
-            flux_log_error (config->h, "strdup");
-            goto error;
-        }
-    }
-    return 0;
-error:
-    config->count = index;
-    free_uris (config);
-    return -1;
-}
-
-struct cluster_config *selection_init (flux_t *h)
-{
-    struct cluster_config *config;
-
-    if (!h) {
-        errno = EINVAL;
-        return NULL;
-    }
-    if (!(config = calloc (1, sizeof (*config))))
-        return NULL;
-    config->h = h;
-    if (load_config (config) < 0) {
-        selection_destroy (config);
-        return NULL;
-    }
-    return config;
-}
-
-void selection_destroy (struct cluster_config *config)
-{
-    if (!config)
-        return;
-    free_uris (config);
-    free (config);
-}
 
 static bool selection_has_clusters (struct cluster_config *config,
                                     const char *strategy_name)
@@ -367,18 +282,153 @@ static const char *select_least_pending_cluster (struct cluster_config *config)
     return best_uri;
 }
 
+static const char *select_assign_cluster (struct cluster_config *config, const char *strategy)
+{
+    size_t idx = 0;
+    const char *suffix;
+    char *endptr;
+    unsigned long val;
+
+    if (!selection_has_clusters (config, "assign"))
+        return NULL;
+
+    suffix = strchr (strategy, ':');
+    if (suffix) {
+        errno = 0;
+        val = strtoul (suffix + 1, &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || val > SIZE_MAX) {
+            flux_log (config->h,
+                      LOG_ERR,
+                      "assign: invalid sub-instance ID '%s': %s",
+                      suffix + 1,
+                      strerror (errno));
+            return NULL;
+        }
+        idx = (size_t)val;
+    }
+
+    if (idx >= config->count) {
+        flux_log (config->h,
+                  LOG_ERR,
+                  "assign: sub-instance ID %zu out of range (0..%zu)",
+                  idx,
+                  config->count - 1);
+        errno = ERANGE;
+        return NULL;
+    }
+
+    flux_log (config->h,
+              LOG_INFO,
+              "Selected cluster %zu by assign policy: %s",
+              idx,
+              config->uris[idx]);
+    return config->uris[idx];
+}
+
 const char *select_cluster (struct cluster_config *config, const char *strategy)
 {
-    if (!config) {
+    if (!strategy || !config) {
         errno = EINVAL;
         return NULL;
     }
-    if (!strategy || strlen (strategy) == 0 || strcmp (strategy, "random") == 0)
-        return select_random_cluster (config);
     if (strcmp (strategy, "least_pending") == 0)
         return select_least_pending_cluster (config);
     if (strcmp (strategy, "shortest_match") == 0)
         return select_shortest_match_cluster (config);
-    return NULL;
+    if (strncmp (strategy, "assign", 6) == 0)
+        return select_assign_cluster (config, strategy);
+    return select_random_cluster (config);
+}
+
+static int load_config (struct cluster_config *config)
+{
+    flux_error_t error;
+    json_t *delegate = NULL;
+    const flux_conf_t *conf;
+    size_t index;
+    json_t *value;
+
+    if (!(conf = flux_get_conf (config->h))) {
+        flux_log_error (config->h, "flux_get_conf");
+        return -1;
+    }
+
+    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
+        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
+        return -1;
+    }
+
+    if (!delegate || !json_is_array (delegate)) {
+        config->count = 0;
+        config->uris = NULL;
+        return 0;
+    }
+
+    config->count = json_array_size (delegate);
+    if (config->count == 0) {
+        config->uris = NULL;
+        return 0;
+    }
+    if (!(config->uris = calloc (config->count, sizeof (char *)))) {
+        flux_log_error (config->h, "calloc");
+        return -1;
+    }
+
+    json_array_foreach (delegate, index, value) {
+        const char *uri;
+        if (!json_is_string (value)) {
+            flux_log (config->h, LOG_ERR, "delegate array contains non-string");
+            goto error;
+        }
+        uri = json_string_value (value);
+        if (!(config->uris[index] = strdup (uri))) {
+            flux_log_error (config->h, "strdup");
+            goto error;
+        }
+    }
+
+    return 0;
+error:
+    if (config->uris) {
+        size_t i;
+        for (i = 0; i < index; i++)
+            free (config->uris[i]);
+        free (config->uris);
+        config->uris = NULL;
+    }
+    config->count = 0;
+    return -1;
+}
+
+struct cluster_config *selection_init (flux_t *h)
+{
+    struct cluster_config *config;
+
+    if (!h) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (!(config = calloc (1, sizeof (*config))))
+        return NULL;
+    config->h = h;
+    if (load_config (config) < 0) {
+        free (config);
+        return NULL;
+    }
+    return config;
+}
+
+void selection_destroy (struct cluster_config *config)
+{
+    size_t i;
+
+    if (!config)
+        return;
+    if (config->uris) {
+        for (i = 0; i < config->count; i++)
+            free (config->uris[i]);
+        free (config->uris);
+    }
+    free (config);
 }
 
