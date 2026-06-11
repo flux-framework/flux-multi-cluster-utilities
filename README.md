@@ -24,6 +24,9 @@ The `delegate.so` plugin will be installed in `<install-path>/lib/flux/job-manag
 
 If an `<install-path>` is specified, it is also installed in `flux-multi-cluster-utilities/src/job-manager/plugins/.libs`.
 
+Supported delegation policies are `random`, `least_pending`, `shortest_match`,
+and `assign`.
+
 ### Loading a JobTap Plugin
 The plugin can be loaded with the command below. 
 Note that an absolute path needs to be specified here. 
@@ -173,6 +176,12 @@ the instance can be created across core-granularities, as shown below, on a sing
 ```
 flux submit -n1 -c2 flux start sleep inf
 ```
+
+### Example Scripts
+
+The [examples/](examples) directory contains standalone scripts demonstrating
+delegation policies. See [examples/README.md](examples/README.md) for a full
+description of each script.
 
 ### Upcoming Research
 
