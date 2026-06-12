@@ -206,10 +206,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     struct cluster_config *config;
 
     if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
-        return flux_jobtap_reject_job (p,
-                                       args,
-                                       "error processing delegate: %s",
-                                       strerror (errno));
+        return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
     }
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
@@ -477,10 +474,12 @@ int flux_plugin_init (flux_plugin_t *p)
     struct cluster_config *config;
     flux_t *h = flux_jobtap_get_flux (p);
 
-    if (!h
-        || flux_plugin_register (p, "delegate", tab) < 0
-        || !(config = selection_init(h))
-        || flux_plugin_aux_set (p, "flux::delegate::selection_config", config, (flux_free_f)selection_destroy) < 0) {
+    if (!h || flux_plugin_register (p, "delegate", tab) < 0 || !(config = selection_init (h))
+        || flux_plugin_aux_set (p,
+                                "flux::delegate::selection_config",
+                                config,
+                                (flux_free_f)selection_destroy)
+               < 0) {
         return -1;
     }
     return 0;

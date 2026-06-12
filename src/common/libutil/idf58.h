@@ -23,7 +23,7 @@ static inline const char *idf58 (flux_jobid_t id)
         /* 64bit integer is guaranteed to fit in 21 bytes
          * floor(log(2^64-1)/log(1)) + 1 = 20
          */
-        (void) sprintf (buf, "%ju", (uintmax_t) id);
+        (void)sprintf (buf, "%ju", (uintmax_t)id);
     }
     return buf;
 }
