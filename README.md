@@ -179,7 +179,7 @@ flux submit -n1 -c2 flux start sleep inf
 
 ### Example Scripts
 
-The [examples/](examples) directory contains standalone scripts demonstrating
+The [examples/](examples) directory contains standalone scripts illustrating
 delegation policies. See [examples/README.md](examples/README.md) for a full
 description of each script.
 

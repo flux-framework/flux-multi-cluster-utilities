@@ -21,6 +21,9 @@ TESTSCRIPTS = \
 	t1000-delegate-load.t \
 	t1001-delegate-assign.t \
 	t1002-delegate-cancel.t
+	t1003-delegate-least-pending.t \
+	t1004-delegate-shortest-match.t \
+	t1005-delegate-random.t
 
 # dist_check_SCRIPTS are built and installed for 'make distcheck'
 dist_check_SCRIPTS = \
