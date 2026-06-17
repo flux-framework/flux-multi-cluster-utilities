@@ -35,7 +35,7 @@ test_expect_success 'plugin can be loaded' '
 '
 
 test_expect_success 'delegation submission works' '
-	jobid=$(flux submit --dependency=delegate hostname) &&
+	jobid=$(flux submit -S system.delegate=random hostname) &&
 	flux job attach $jobid &&
 	flux job eventlog -H $jobid
 '

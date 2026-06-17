@@ -159,7 +159,7 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
     flux_t *h = flux_jobtap_get_flux (p);
     flux_jobid_t *id;
     flux_t *delegated;
-    const char *uri, *strategy = "random";
+    const char *uri, *strategy = NULL;
     json_t *jobspec;
     flux_future_t *jobid_future = NULL;
     struct cluster_config *config;
@@ -182,6 +182,11 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
     }
+    if (json_unpack (jobspec, "{s:{s:{s:s}}}", "attributes", "system", "delegate", &strategy) < 0) {
+        free (id);
+        return flux_jobtap_reject_job (p, args, "missing or invalid attributes.system.delegate");
+    }
+    flux_log (h, LOG_DEBUG, "jobspec: %s, strategy: %s", json_dumps (jobspec, 0), strategy);
     if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
         || !(uri = select_cluster (config, strategy))) {
         flux_log_error (h, "%s: could not select URI", idf58 (*id));
@@ -214,7 +219,8 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
                                      strerror (errno));
         return -1;
     }
-    if (!(jobid_future = flux_job_submit (delegated, json_dumps(jobspec,0), 16, FLUX_JOB_WAITABLE))
+    if (!(jobid_future =
+              flux_job_submit (delegated, json_dumps (jobspec, 0), 16, FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {
         flux_log_error (h,
