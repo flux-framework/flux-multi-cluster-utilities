@@ -107,7 +107,7 @@ extract_delegated_job_id() {
 # --- Step 1: Allocate the source Flux instance (local/Tuolumne) -------------
 
 printf '[1/6] Allocating source Flux instance on Tuolumne...\n'
-SOURCE_INSTANCE="$(flux submit -t 10m -N1 flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
+SOURCE_INSTANCE="$(flux submit -t 10m -N1 -q pdebug flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
 LOCAL_CHILD_IDS+=("${SOURCE_INSTANCE}")
 wait_for_running "${SOURCE_INSTANCE}" "source instance"
 printf '  Source instance id: %s\n' "${SOURCE_INSTANCE}"
@@ -116,7 +116,7 @@ printf '  Source instance id: %s\n' "${SOURCE_INSTANCE}"
 
 printf '[2/6] Allocating Tioga target instance...\n'
 TIOGA_HOST="tioga.llnl.gov"
-TIOGA_CHILD_ID="$(ssh "${TIOGA_HOST}" "flux submit --queue=pdebug --bank=asccasc -t 10m -N1 flux start sleep inf" | tail -n 1 | tr -d '[:space:]')"
+TIOGA_CHILD_ID="$(ssh "${TIOGA_HOST}" "flux submit --queue=pdebug -t 10m -N1 flux start sleep inf" | tail -n 1 | tr -d '[:space:]')"
 REMOTE_CHILD_IDS["${TIOGA_HOST}"]="${TIOGA_CHILD_ID}"
 wait_for_remote_running "${TIOGA_HOST}" "${TIOGA_CHILD_ID}" "Tioga target"
 TIOGA_URI="$(wait_for_remote_uri "${TIOGA_HOST}" "${TIOGA_CHILD_ID}" "Tioga target")"
@@ -130,7 +130,7 @@ printf '  Tioga target:\n    id: %s\n    uri: %s\n' "${TIOGA_CHILD_ID}" "${TIOGA
 
 printf '[3/6] Allocating Corona target instance...\n'
 CORONA_HOST="corona.llnl.gov"
-CORONA_CHILD_ID="$(ssh "${CORONA_HOST}" "flux submit --queue=pdebug --bank=fractale -t 10m -N1 flux start sleep inf" | tail -n 1 | tr -d '[:space:]')"
+CORONA_CHILD_ID="$(ssh "${CORONA_HOST}" "flux submit --queue=pdebug -t 10m -N1 flux start sleep inf" | tail -n 1 | tr -d '[:space:]')"
 REMOTE_CHILD_IDS["${CORONA_HOST}"]="${CORONA_CHILD_ID}"
 wait_for_remote_running "${CORONA_HOST}" "${CORONA_CHILD_ID}" "Corona target"
 CORONA_URI="$(wait_for_remote_uri "${CORONA_HOST}" "${CORONA_CHILD_ID}" "Corona target")"
@@ -167,7 +167,8 @@ set -euo pipefail
 if flux jobtap list | grep -q 'delegate.so'; then
     flux jobtap remove delegate.so
 fi
-flux jobtap load "${PLUGIN_PATH}" config="${CONFIG_FILE}" >/dev/null
+flux config load ${CONFIG_FILE}
+flux jobtap load ${PLUGIN_PATH}
 EOF
 
 sleep 5

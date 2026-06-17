@@ -30,15 +30,15 @@ if [[ ! -f "${PLUGIN_PATH}" ]]; then
 fi
 
 printf '[1/5] Starting 1-node source instance on a 4-node allocation...\n'
-SOURCE_INSTANCE="$(flux batch --queue=pdebug -N1 -n1 -t120s --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
+SOURCE_INSTANCE="$(flux batch --queue=pdebug -N1 -n1 -t10m --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
 flux job wait-event "${SOURCE_INSTANCE}" start
 
 printf '[2/5] Starting three 1-node target instances...\n'
-TARGET0_ID="$(flux batch --queue=pdebug -N1 -n1 -t120s --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
+TARGET0_ID="$(flux batch --queue=pdebug -N1 -n1 -t10m --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
 flux job wait-event "${TARGET0_ID}" start
-TARGET1_ID="$(flux batch --queue=pdebug -N1 -n1 -t120s --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
+TARGET1_ID="$(flux batch --queue=pdebug -N1 -n1 -t10m --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
 flux job wait-event "${TARGET1_ID}" start
-TARGET2_ID="$(flux batch --queue=pdebug -N1 -n1 -t120s --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
+TARGET2_ID="$(flux batch --queue=pdebug -N1 -n1 -t10m --wrap sleep inf | tail -n 1 | tr -d '[:space:]')"
 flux job wait-event "${TARGET2_ID}" start
 
 TARGET0_URI="$(flux uri --remote "${TARGET0_ID}")"
