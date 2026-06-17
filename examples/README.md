@@ -20,23 +20,22 @@ These scripts demonstrate delegation policies within a single Flux allocation us
 |--------|-------------|
 | [`assign-delegation-3instances.sh`](assign-delegation-3instances.sh) | Demonstrates the **assign** delegation policy. Creates one source Flux instance and three 1-node target sub-instances, then submits a job that gets assigned to a specific target by index. |
 | [`random-delegation-3instances.sh`](random-delegation-3instances.sh) | Demonstrates the **random** delegation policy. Creates one source Flux instance and three 1-node target sub-instances, then submits test jobs that get randomly delegated across the three targets. |
-| [`shortest-match-delegation-3instances.sh`](shortest-match-delegation-3instances.sh) | Demonstrates the **shortest_match** delegation policy. Creates contention by loading two jobs onto target-0, then submits a job that selects the least-loaded target based on match times. |
+| [`shortest-match-delegation-3instances.sh`](shortest-match-delegation-3instances.sh) | demonstrates the **shortest_match** delegation policy. creates contention by loading two jobs onto target-0, then submits a job that selects the least-loaded target based on match times. Here, match times represent the time taken to schedule the job itself; this includes searching the resource graph and identifying matching resources. On very large systems, match time could be in minutes. |
 | [`least-pending-delegation-3instances.sh`](least-pending-delegation-3instances.sh) | Demonstrates the **least_pending** delegation policy. Creates two pending jobs on target-0, then submits a job that selects an idle target instead. |
 
 **Usage:**
 
 ```bash
-cd examples
-bash random-delegation-3instances.sh
+bash examples/random-delegation-3instances.sh
 # or
-bash shortest-match-delegation-3instances.sh
+bash examples/shortest-match-delegation-3instances.sh
 # or
-bash least-pending-delegation-3instances.sh
+bash examples/least-pending-delegation-3instances.sh
 # or
-bash assign-delegation-3instances.sh
+bash examples/assign-delegation-3instances.sh
 ```
 
-Each script creates its own temporary `*-clusters.toml` config file and cleans up on exit (set `KEEP_CONFIG=1` to retain it).
+Each script creates its own temporary `*-clusters.toml` config file and cleans up on exit.
 
 ---
 
@@ -49,25 +48,5 @@ Each script creates its own temporary `*-clusters.toml` config file and cleans u
 **Usage:**
 
 ```bash
-cd examples
-bash job-delegation.sh          # Uses default multisystem-layout.conf
-bash job-delegation.sh layout.conf   # Use a custom layout file
+bash examples/job-delegation.sh          # Uses default multisystem-layout.conf
 ```
-
-**Layout configuration files:**
-
-| File | Description |
-|------|-------------|
-| [`multisystem-layout.conf`](multisystem-layout.conf) | Three-system layout: Tuolumne (2x1 node) + Corona (3x1 node) + Tioga (2x1 node) |
-| [`multisystem-layout-2.conf`](multisystem-layout-2.conf) | Alternative three-system layout: Tuolumne (2x1 node) + Corona (3x1 node) + Tioga (2x1 node) |
-
-**Environment variables** (override defaults in `job-delegation.sh`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SOURCE_NODES` | `1` | Nodes for source instance |
-| `BANK` | `fractale` | Default bank for all systems |
-| `TUO_PARTITION` | `pdebug` | Tuolumne partition |
-| `CORONA_HOST` | `corona.llnl.gov` | Corona cluster hostname |
-| `TIOGA_HOST` | `tioga.llnl.gov` | Tioga cluster hostname |
-| `WAIT_TIMEOUT` | `180` | Seconds to wait for jobs |
