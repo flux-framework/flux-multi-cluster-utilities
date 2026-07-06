@@ -29,6 +29,38 @@
 #include "src/common/libutil/eventlog.h"
 #include "src/common/select/select.h"
 
+enum delegate_phase {
+    DELEGATE_HELD,
+    DELEGATE_RESUMED,
+};
+
+struct delegate_job_info {
+    flux_jobid_t id;
+    flux_t *remote;
+    enum delegate_phase phase;
+};
+
+static void delegate_job_info_destroy (struct delegate_job_info *d)
+{
+    if (d) {
+        int saved_errno = errno;
+        flux_close (d->remote);
+        free (d);
+        errno = saved_errno;
+    }
+}
+
+static struct delegate_job_info *delegate_job_info_create (flux_jobid_t id)
+{
+    struct delegate_job_info *d;
+
+    if (!(d = calloc (1, sizeof (*d))))
+        return NULL;
+    d->id = id;
+    d->phase = DELEGATE_HELD;
+    return d;
+}
+
 /*
  * Callback firing when job has completed.
  */
@@ -42,7 +74,6 @@ static void wait_callback (flux_future_t *f, void *arg)
     if (!(id = flux_future_aux_get (f, "flux::jobid"))) {
         return;
     }
-    flux_log (flux_jobtap_get_flux (p), LOG_DEBUG, "target_source_wait_cb");
     if (flux_job_wait_get_status (f, &success, &errstr) < 0) {
         flux_jobtap_raise_exception (p,
                                      *id,
@@ -61,9 +92,7 @@ static void wait_callback (flux_future_t *f, void *arg)
                                          "urgency",
                                          16)
             < 0) {
-            // flux_jobtap_job_set_flag (p, *id, "alloc-bypass") < 0) {
-            errstr = "failed to update priority";
-            flux_log (flux_jobtap_get_flux (p), LOG_DEBUG, "error");
+            flux_log (flux_jobtap_get_flux (p), LOG_DEBUG, "error unable to update priority");
         } else {
             flux_future_destroy (f);
             return;
@@ -93,7 +122,6 @@ static void event_callback (flux_future_t *f, void *arg)
         flux_log_error (h, "could not fetch flux::jobid from future");
         return;
     }
-    flux_log (h, LOG_DEBUG, "target_event_cb");
     if (flux_job_event_watch_get (f, &event) != 0 || !(o = eventlog_entry_decode (event))
         || eventlog_entry_parse (o, &timestamp, &name, &context) < 0) {
         json_decref (o);
@@ -138,7 +166,6 @@ static void submit_callback (flux_future_t *f, void *arg)
         flux_future_destroy (f);
         return;
     }
-    flux_log (h, LOG_DEBUG, "target_submit_cb");
     if (!(delegated_h = flux_future_get_flux (f)) || flux_job_submit_get_id (f, &delegated_id) < 0
         || !(wait_future = flux_job_wait (delegated_h, delegated_id))
         || flux_future_aux_set (wait_future, "flux::jobid", orig_id, NULL) < 0
@@ -166,97 +193,78 @@ static void submit_callback (flux_future_t *f, void *arg)
     }
     flux_future_destroy (f);
 }
+/*
+ * Remove all dependencies from jobspec.
+ *
+ * Dependencies may reference jobids that the instance the job is
+ * being sent to does not recognize.
+ */
+static char *remove_dependency_and_encode (json_t *jobspec)
+{
+    char *encoded_jobspec;
+    json_t *attributes, *system;
+
+    attributes = json_object_get (jobspec, "attributes");
+    system = attributes ? json_object_get (attributes, "system") : NULL;
+
+    if (system) {
+        json_object_del (system, "dependencies");
+    }
+
+    encoded_jobspec = json_dumps (jobspec, 0);
+    return encoded_jobspec;
+}
 
 static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
-    flux_jobid_t *id;
-    flux_t *delegated;
-    const char *uri, *strategy = NULL;
+    flux_jobid_t id;
+    json_t *delegate;
     json_t *jobspec;
-    flux_future_t *jobid_future = NULL;
-    struct cluster_config *config;
-    if (!h || !(id = malloc (sizeof (flux_jobid_t)))) {
+    struct delegate_job_info *d;
+
+    if (!h)
         return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
-    }
-    flux_log (h, LOG_DEBUG, "source_depend_cb");
+
     if (flux_plugin_arg_unpack (args,
                                 FLUX_PLUGIN_ARG_IN,
                                 "{s:I s:o}",
                                 "id",
-                                id,
+                                &id,
                                 "jobspec",
                                 &jobspec)
-            < 0
-        || flux_jobtap_job_aux_set (p, *id, "flux::delegate::jobid", id, free) < 0) {
-        free (id);
+        < 0) {
         return flux_jobtap_reject_job (p,
                                        args,
                                        "error processing delegate: %s",
                                        flux_plugin_arg_strerror (args));
     }
-    // Check whether to delegate or not
-    if (json_unpack (jobspec, "{s:{s:{s:s}}}", "attributes", "system", "delegate", &strategy) < 0) {
-        flux_jobtap_priority_unavail (p, NULL);
-        free (id);
-        return 0;
-    }
 
-    flux_log (h, LOG_DEBUG, "jobspec: %s, strategy: %s", json_dumps (jobspec, 0), strategy);
-    if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
-        || !(uri = select_cluster (config, strategy))) {
-        flux_log_error (h, "%s: could not select URI", idf58 (*id));
+    if (json_unpack (jobspec, "{s:{s:{s:o}}}", "attributes", "system", "delegate", &delegate) < 0)
+        return 0;
+
+    if (!(d = delegate_job_info_create (id)))
+        return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
+
+    if (flux_jobtap_job_aux_set (p,
+                                 FLUX_JOBTAP_CURRENT_JOB,
+                                 "flux::delegate",
+                                 d,
+                                 (flux_free_f)delegate_job_info_destroy)
+            < 0
+        || flux_jobtap_event_post_pack (p,
+                                        FLUX_JOBTAP_CURRENT_JOB,
+                                        "urgency",
+                                        "{s:i s:i}",
+                                        "userid",
+                                        getuid (),
+                                        "urgency",
+                                        FLUX_JOB_URGENCY_HOLD)
+               < 0) {
+        delegate_job_info_destroy (d);
+        flux_log_error (h, "Job urgency event failure");
         return -1;
     }
-    if (!(delegated = flux_open (uri, 0))) {
-        flux_log_error (h, "%s: could not open URI %s", idf58 (*id), uri);
-        return -1;
-    }
-    if (flux_jobtap_reprioritize_job (p, *id, 0) < 0
-        // if (flux_jobtap_event_post_pack (p,
-        //                                  FLUX_JOBTAP_CURRENT_JOB,
-        //                                  "urgency",
-        //                                  "{s:i s:i}",
-        //                                  "userid",
-        //                                  getuid (),
-        //                                  "urgency",
-        //                                  FLUX_JOB_URGENCY_HOLD)
-        //         < 0
-        || flux_jobtap_job_aux_set (p,
-                                    *id,
-                                    "flux::delegated_handle",
-                                    delegated,
-                                    (flux_free_f)flux_close)
-               < 0
-        || flux_set_reactor (delegated, flux_get_reactor (h)) < 0) {
-        flux_log_error (h, "%s: flux_jobtap_dependency_add", idf58 (*id));
-        flux_close (delegated);
-        return -1;
-    }
-    if (flux_jobtap_job_set_flag (p, FLUX_JOBTAP_CURRENT_JOB, "alloc-bypass") < 0) {
-        flux_jobtap_raise_exception (p,
-                                     FLUX_JOBTAP_CURRENT_JOB,
-                                     "alloc",
-                                     0,
-                                     "Failed to set alloc-bypass: %s",
-                                     strerror (errno));
-        return -1;
-    }
-    // submit the job to the specified instance and attach a callback for fetching the
-    // ID
-    if (!(jobid_future =
-              flux_job_submit (delegated, json_dumps (jobspec, 0), 16, FLUX_JOB_WAITABLE))
-        || flux_future_then (jobid_future, -1, submit_callback, p) < 0
-        || flux_future_aux_set (jobid_future, "flux::jobid", id, NULL) < 0) {
-        flux_log_error (h,
-                        "%s: could not delegate job to specified Flux "
-                        "instance",
-                        idf58 (*id));
-        flux_future_destroy (jobid_future);
-        // free (jobspec);
-        return -1;
-    }
-    // free (jobspec);
     return 0;
 }
 
@@ -273,7 +281,6 @@ static void alloc_continuation (flux_future_t *f, void *arg)
 
     flux_t *h = flux_jobtap_get_flux (p);
 
-    flux_log (h, LOG_DEBUG, "alloc_continuation");
     if (!f || !(id = flux_future_aux_get (f, "flux::jobid"))) {
         flux_log_error (h, "alloc_continuation: failed to get jobid from future");
         goto done;
@@ -323,12 +330,18 @@ done:
 static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
-    int *after_hold;
-    flux_log (h, LOG_DEBUG, "source_priority_cb");
-    if (!(after_hold = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "after_hold"))) {
-        flux_log_error (h, "Unable to get after_hold");
-    }
-    if (*after_hold) {
+    struct delegate_job_info *d;
+    flux_t *delegated;
+    json_t *jobspec;
+    char *encoded_jobspec = NULL;
+    const char *uri, *strategy = NULL;
+    flux_future_t *jobid_future = NULL;
+    struct cluster_config *config;
+
+    if (!(d = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate")))
+        return 0;
+
+    if (d->phase == DELEGATE_RESUMED) {
         if (flux_jobtap_job_set_flag (p, FLUX_JOBTAP_CURRENT_JOB, "alloc-bypass") < 0) {
             flux_jobtap_raise_exception (p,
                                          FLUX_JOBTAP_CURRENT_JOB,
@@ -338,20 +351,39 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
                                          strerror (errno));
             return -1;
         }
+        return 0;
     }
 
-    return 0;
-}
-
-static int create_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
-{
-    flux_t *h = flux_jobtap_get_flux (p);
-    flux_log (h, LOG_DEBUG, "source_create_cb");
-    int *flag = malloc (sizeof *flag);
-    *flag = 0;
-    if (flux_jobtap_job_aux_set (p, FLUX_JOBTAP_CURRENT_JOB, "after_hold", flag, free)) {
-        flux_log_error (h, "Unable to set the job after hold info");
+    if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:o}", "jobspec", &jobspec) < 0) {
+        flux_log_error (h, "%s: could not unpack jobspec", idf58 (d->id));
+        return -1;
     }
+    if (!(config = flux_plugin_aux_get (p, "flux::delegate::selection_config"))
+        || !(uri = select_cluster (config, strategy))) {
+        flux_log_error (h, "%s: could not select URI", idf58 (d->id));
+        return -1;
+    }
+    if (!(delegated = flux_open (uri, 0))) {
+        flux_log_error (h, "%s: could not open URI %s", idf58 (d->id), uri);
+        return -1;
+    }
+    if (flux_set_reactor (delegated, flux_get_reactor (h)) < 0) {
+        flux_log_error (h, "%s: flux_set_reactor", idf58 (d->id));
+        flux_close (delegated);
+        return -1;
+    }
+    d->remote = delegated;
+
+    if (!(encoded_jobspec = remove_dependency_and_encode (jobspec))
+        || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
+        || flux_future_then (jobid_future, -1, submit_callback, p) < 0
+        || flux_future_aux_set (jobid_future, "flux::jobid", &d->id, NULL) < 0) {
+        flux_log_error (h, "%s: could not delegate job to specified Flux instance", idf58 (d->id));
+        flux_future_destroy (jobid_future);
+        free (encoded_jobspec);
+        return -1;
+    }
+    free (encoded_jobspec);
     return 0;
 }
 
@@ -365,28 +397,24 @@ static int create_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
 static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
-    if (!h)
-        return -1;
-    flux_jobid_t *id;
+    struct delegate_job_info *d;
     flux_kvs_txn_t *txn = NULL;
     json_t *R = NULL;
     char key[256];
     char hostname[HOST_NAME_MAX + 1];
     flux_future_t *alloc_future = NULL;
-    int *after_hold;
-    flux_log (h, LOG_DEBUG, "source_sched");
-    if (!(id = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate::jobid"))) {
-        return 0;
-    }
-    if (!(after_hold = flux_jobtap_job_aux_get (p, *id, "after_hold"))) {
-        flux_log_error (h, "Unable to get after_hold");
-    }
-    if (!*after_hold) {
-        *after_hold = 1;
-        return 0;
-    }
 
-    // return 0;
+    if (!h)
+        return -1;
+
+    if (!(d = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate")))
+        return 0;
+
+    /*  First pass: establish the hold and wait for the remote job to finish. */
+    if (d->phase == DELEGATE_HELD) {
+        d->phase = DELEGATE_RESUMED;
+        return 0;
+    }
 
     if (gethostname (hostname, sizeof (hostname)) < 0) {
         flux_jobtap_raise_exception (p,
@@ -395,10 +423,11 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
                                      0,
                                      "delegate: gethostname: %s",
                                      flux_plugin_arg_strerror (args));
-        flux_log_error (h, "gethostname for %s", idf58 (*id));
+        flux_log_error (h, "gethostname for %s", idf58 (d->id));
         return -1;
     }
-    // Create a fake R without properties
+
+    /* Create a fake R without properties */
     if (!(R = json_pack ("{s:i s:{s:[{s:s s:{s:s}}] s:f s:f s:[s]}}",
                          "version",
                          1,
@@ -417,16 +446,17 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
                          hostname))
         || flux_plugin_arg_pack (args, FLUX_PLUGIN_ARG_OUT, "{s:O}", "R", R) < 0) {
         json_decref (R);
-        flux_log_error (h, "failed to output fake R for %s", idf58 (*id));
+        flux_log_error (h, "failed to output fake R for %s", idf58 (d->id));
         return flux_jobtap_raise_exception (p,
-                                            *id,
+                                            d->id,
                                             "alloc",
                                             0,
                                             "failed to post alloc event: %s",
                                             strerror (errno));
     }
-    // Create KVS transaction posting the R
-    if (!(txn = flux_kvs_txn_create ()) || flux_job_kvs_key (key, sizeof (key), *id, "R") < 0
+
+    /* Create KVS transaction posting the R */
+    if (!(txn = flux_kvs_txn_create ()) || flux_job_kvs_key (key, sizeof (key), d->id, "R") < 0
         || flux_kvs_txn_pack (txn, 0, key, "O", R) < 0
         || !(alloc_future = flux_kvs_commit (h, NULL, 0, txn))
         || flux_future_then (alloc_future, -1, alloc_continuation, p) < 0) {
@@ -435,7 +465,7 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
         flux_future_destroy (alloc_future);
         json_decref (R);
         return flux_jobtap_raise_exception (p,
-                                            *id,
+                                            d->id,
                                             "alloc",
                                             0,
                                             "failed to post alloc event: %s",
@@ -443,11 +473,11 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
     }
     json_decref (R);
     flux_kvs_txn_destroy (txn);
-    if (flux_future_aux_set (alloc_future, "flux::jobid", id, NULL) < 0) {
-        flux_future_destroy (alloc_future);
-        return flux_jobtap_raise_exception (p, *id, "alloc", 0, "flux_future_aux_set");
-    }
 
+    if (flux_future_aux_set (alloc_future, "flux::jobid", &d->id, NULL) < 0) {
+        flux_future_destroy (alloc_future);
+        return flux_jobtap_raise_exception (p, d->id, "alloc", 0, "flux_future_aux_set");
+    }
     return 0;
 }
 
@@ -464,7 +494,6 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
     if (!h)
         return -1;
 
-    flux_log (h, LOG_DEBUG, "source_run_cb");
     if (!flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate::jobid"))
         return 0;
 
@@ -513,11 +542,10 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
 }
 
 static const struct flux_plugin_handler tab[] = {
+    {"job.state.depend", depend_cb, NULL},
+    {"job.state.priority", priority_cb, NULL},
     {"job.state.sched", sched_cb, NULL},
     {"job.state.run", run_cb, NULL},
-    {"job.state.depend", depend_cb, NULL},
-    {"job.create", create_cb, NULL},
-    {"job.state.priority", priority_cb, NULL},
     {0},
 };
 

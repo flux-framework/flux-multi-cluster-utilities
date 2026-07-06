@@ -40,8 +40,15 @@ test_expect_success 'delegation submission works' '
 	flux job eventlog -H $jobid
 '
 
+test_expect_success 'delegated dependent job runs after first job completes' '
+	job1=$(flux submit sleep 2) &&
+	job2=$(flux submit --dependency=afterany:${job1} -S system.delegate=random hostname) &&
+	flux job wait-event ${job1} clean &&
+	flux job wait-event ${job2} clean &&
+	flux job attach ${job2} &&
+	flux job eventlog -H ${job2}
+'
 test_expect_success 'cancel subinstances' '
 	flux cancel --all
 '
-
 test_done
