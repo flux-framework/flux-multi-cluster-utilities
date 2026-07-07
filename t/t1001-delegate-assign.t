@@ -26,7 +26,7 @@ test_expect_success 'plugin can be loaded' '
 '
 
 test_expect_success 'assign chooses the requested target' '
-	jobid=$(flux submit --dependency=delegate:assign:1 hostname) &&
+	jobid=$(flux submit -S system.delegate=assign:1 hostname) &&
 	flux job wait-event --timeout=60 ${jobid} clean &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit" &&
 	delegated_id=$(flux job eventlog ${jobid} |
@@ -36,9 +36,10 @@ test_expect_success 'assign chooses the requested target' '
 '
 
 test_expect_success 'assign rejects invalid target indices' '
-	test_must_fail flux submit --dependency=delegate:assign:2 hostname
+	jobid=$(flux submit -S system.delegate=assign:2 hostname) &&
+	flux job wait-event --timeout=60 ${jobid} clean &&
+	flux job eventlog ${jobid} | grep -q "exception type=\"delegate\""
 '
-
 test_expect_success 'unload delegate plugin' '
 	flux jobtap remove delegate.so
 '
