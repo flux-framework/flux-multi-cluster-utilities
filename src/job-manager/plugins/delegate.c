@@ -69,7 +69,7 @@ static void wait_callback (flux_future_t *f, void *arg)
     flux_plugin_t *p = arg;
     flux_jobid_t *id;
     bool success;
-    const char *errstr;
+    const char *errstr = "";
 
     if (!(id = flux_future_aux_get (f, "flux::jobid"))) {
         return;
@@ -90,9 +90,10 @@ static void wait_callback (flux_future_t *f, void *arg)
                                          "userid",
                                          getuid (),
                                          "urgency",
-                                         16)
+                                         FLUX_JOB_URGENCY_DEFAULT)
             < 0) {
-            flux_log (flux_jobtap_get_flux (p), LOG_DEBUG, "error unable to update priority");
+            errstr = "error unable to update priority";
+            flux_log (flux_jobtap_get_flux (p), LOG_DEBUG, "%s", errstr);
         } else {
             flux_future_destroy (f);
             return;
@@ -211,6 +212,7 @@ static char *remove_dependency_and_encode (json_t *jobspec)
 
     if (system) {
         json_object_del (system, "dependencies");
+        json_object_del (system, "delegate");
     }
 
     encoded_jobspec = json_dumps (jobspec, 0);
@@ -222,7 +224,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
 {
     flux_t *h = flux_jobtap_get_flux (p);
     flux_jobid_t id;
-    json_t *delegate;
+    const char *delegate;
     json_t *jobspec;
     struct delegate_job_info *d;
 
@@ -242,7 +244,7 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
                                        flux_plugin_arg_strerror (args));
     }
 
-    if (json_unpack (jobspec, "{s:{s:{s:o}}}", "attributes", "system", "delegate", &delegate) < 0)
+    if (json_unpack (jobspec, "{s:{s:{s:s}}}", "attributes", "system", "delegate", &delegate) < 0)
         return 0;
     if (!(d = delegate_job_info_create (id)))
         return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
@@ -317,7 +319,7 @@ done:
  * Delegation hold via priority:
  *
  * When we delegate a job, we "hold" it by setting its priority to 0.
- * Once the job finishes on the target cluster, we restore the priority
+ * Once the job finishes on the target cluster, we restore the urgency
  * to the default value of 16.
  *
  * This restore triggers a second pass through the priority and sched
@@ -376,7 +378,10 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
 
     if (flux_set_reactor (delegated, flux_get_reactor (h)) < 0
         || !(encoded_jobspec = remove_dependency_and_encode (jobspec))
-        || !(jobid_future = flux_job_submit (delegated, encoded_jobspec, 16, FLUX_JOB_WAITABLE))
+        || !(jobid_future = flux_job_submit (delegated,
+                                             encoded_jobspec,
+                                             FLUX_JOB_URGENCY_DEFAULT,
+                                             FLUX_JOB_WAITABLE))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", &d->id, NULL) < 0) {
         errstr = "could not delegate job to specified Flux instance";
