@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syslog.h>
 #include <time.h>
 #include <unistd.h>
 #include <jansson.h>
@@ -55,6 +56,54 @@ static void free_uris (struct cluster_config *config)
     config->count = 0;
 }
 
+struct cluster_config *copy_config (struct cluster_config *config)
+{
+    struct cluster_config *new_config;
+
+    if (!(new_config = calloc (1, sizeof (*new_config)))) {
+        flux_log_error (config->h, "calloc error, copy_config");
+        return NULL;
+    }
+    new_config->h = config->h;
+    new_config->count = config->count;
+    new_config->random_seeded = config->random_seeded;
+
+    if (!(new_config->uris = calloc (new_config->count, sizeof (char *)))) {
+        flux_log_error (config->h, "calloc error, copy_config uris");
+        free (new_config);
+        return NULL;
+    }
+    for (size_t i = 0; i < config->count; i++) {
+        if (!(new_config->uris[i] = strdup (config->uris[i]))) {
+            flux_log_error (config->h, "strdup error, copy_config");
+            free_uris (new_config);
+            free (new_config);
+            return NULL;
+        }
+    }
+    return new_config;
+}
+
+int config_remove_uri (struct cluster_config *config, const char *uri)
+{
+    bool found = false;
+
+    for (size_t i = 0, j = 0; i < config->count; i++) {
+        if (!found && strcmp (config->uris[i], uri) == 0) {
+            free (config->uris[i]);
+            found = true;
+        } else {
+            config->uris[j++] = config->uris[i];
+        }
+    }
+    if (!found) {
+        errno = ENOENT;
+        return -1;
+    }
+    config->uris[--config->count] = NULL;
+    return 0;
+}
+
 static int load_config (struct cluster_config *config)
 {
     flux_error_t error;
@@ -68,7 +117,7 @@ static int load_config (struct cluster_config *config)
         return -1;
     }
 
-    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
+    if (flux_conf_unpack (conf, &error, "{s?O}", "delegate", &delegate) < 0) {
         flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
         return -1;
     }
