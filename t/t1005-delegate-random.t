@@ -26,7 +26,7 @@ test_expect_success 'plugin can be loaded' '
 '
 
 test_expect_success 'random delegates to one configured target' '
-	jobid=$(flux submit --dependency=delegate:random hostname) &&
+	jobid=$(flux submit -S system.delegate=random hostname) &&
 	flux job wait-event --timeout=60 ${jobid} clean &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit" &&
 	delegated_id=$(flux job eventlog ${jobid} |
