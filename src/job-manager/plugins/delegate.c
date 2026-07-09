@@ -29,6 +29,8 @@
 #include "src/common/libutil/eventlog.h"
 #include "src/common/select/select.h"
 
+#define DELEGATION_FAILURE_EXCEPTION "DelegationFailure"
+
 enum delegate_phase {
     DELEGATE_HELD,
     DELEGATE_RESUMED,
@@ -36,6 +38,7 @@ enum delegate_phase {
 
 struct delegate_job_info {
     flux_jobid_t id;
+    flux_jobid_t delegated_id;
     flux_t *remote;
     enum delegate_phase phase;
 };
@@ -57,6 +60,7 @@ static struct delegate_job_info *delegate_job_info_create (flux_jobid_t id)
     if (!(d = calloc (1, sizeof (*d))))
         return NULL;
     d->id = id;
+    d->delegated_id = UINT64_MAX;
     d->phase = DELEGATE_HELD;
     return d;
 }
@@ -77,7 +81,7 @@ static void wait_callback (flux_future_t *f, void *arg)
     if (flux_job_wait_get_status (f, &success, &errstr) < 0) {
         flux_jobtap_raise_exception (p,
                                      *id,
-                                     "DelegationFailure",
+                                     DELEGATION_FAILURE_EXCEPTION,
                                      0,
                                      "Could not fetch result of job");
         return;
@@ -99,10 +103,27 @@ static void wait_callback (flux_future_t *f, void *arg)
             return;
         }
     }
-    flux_jobtap_raise_exception (p, *id, "DelegationFailure", 0, "errstr %s", errstr);
+
+    flux_jobtap_raise_exception (p, *id, DELEGATION_FAILURE_EXCEPTION, 0, "errstr %s", errstr);
     flux_future_destroy (f);
 }
 
+static void cancel_callback (flux_future_t *f, void *arg)
+{
+    flux_plugin_t *p = arg;
+    flux_t *h;
+    const char *errstr;
+    if (!(h = flux_jobtap_get_flux (p))) {
+        flux_future_destroy (f);
+        return;
+    }
+    if (!(errstr = flux_future_error_string (f))) {
+        flux_future_destroy (f);
+        return;
+    }
+    flux_log_error (h, "Target Instance job cancel failure, Error: %s", errstr);
+    flux_future_destroy (f);
+}
 /*
  * Callback firing when events are ready.
  */
@@ -155,44 +176,77 @@ static void submit_callback (flux_future_t *f, void *arg)
 {
     flux_t *h, *delegated_h;
     flux_plugin_t *p = arg;
-    flux_jobid_t delegated_id, *orig_id;
+    flux_jobid_t delegated_id, *orig_id, *idptr = NULL;
     flux_future_t *wait_future = NULL, *event_future = NULL;
-    const char *errstr;
+    const char *errstr = "";
+    struct delegate_job_info *d;
 
     if (!(h = flux_jobtap_get_flux (p))) {
         flux_future_destroy (f);
         return;
-    } else if (!(orig_id = flux_future_aux_get (f, "flux::jobid"))) {
+    }
+    if (!(orig_id = flux_future_aux_get (f, "flux::jobid"))
+        || (!(d = flux_jobtap_job_aux_get (p, *orig_id, "flux::delegate")))) {
         flux_log_error (h, "in submit callback: couldn't get jobid");
         flux_future_destroy (f);
         return;
     }
-    if (!(delegated_h = flux_future_get_flux (f)) || flux_job_submit_get_id (f, &delegated_id) < 0
-        || !(wait_future = flux_job_wait (delegated_h, delegated_id))
-        || flux_future_aux_set (wait_future, "flux::jobid", orig_id, NULL) < 0
+    if (!(delegated_h = flux_future_get_flux (f))
+        || flux_job_submit_get_id (f, &delegated_id) < 0) {
+        if (!(errstr = flux_future_error_string (f)))
+            errstr = "flux_job_submit_get_id";
+        goto error;
+    }
+
+    /* One scratch pointer is reused for each allocation: the ownership-
+     * transferring aux_set is the LAST check in each chain, so on failure idptr
+     * is NULL or still owned here (local free is safe), and on success the
+     * future/job owns it and idptr is free to be reused. The error label
+     * therefore only destroys futures, never idptr. */
+    if (!(wait_future = flux_job_wait (delegated_h, delegated_id))
         || flux_future_then (wait_future, -1, wait_callback, p) < 0
-        || !(event_future = flux_job_event_watch (delegated_h, delegated_id, "eventlog", 0))
-        || flux_future_aux_set (event_future, "flux::jobid", orig_id, NULL) < 0
+        || !(idptr = malloc (sizeof (*idptr)))
+        || flux_future_aux_set (wait_future, "flux::jobid", idptr, free) < 0) {
+        free (idptr);
+        errstr = "flux_job_wait";
+        goto error;
+    }
+    *idptr = *orig_id;
+
+    if (!(event_future = flux_job_event_watch (delegated_h, delegated_id, "eventlog", 0))
         || flux_future_aux_set (event_future, "flux::handle", h, NULL) < 0
         || flux_future_then (event_future, -1, event_callback, p) < 0
-        || flux_jobtap_event_post_pack (p,
-                                        *orig_id,
-                                        "delegate::submit",
-                                        "{s:I}",
-                                        "jobid",
-                                        delegated_id)
-               < 0) {
-        if (!(errstr = flux_future_error_string (f))) {
-            errstr = "";
-        }
-        flux_log_error (h, "%s: submission to specified Flux instance failed", idf58 (*orig_id));
-        flux_jobtap_raise_exception (p, *orig_id, "DelegationFailure", 0, errstr);
-        flux_future_destroy (wait_future);
-        flux_future_destroy (event_future);
-        flux_future_destroy (f);
-        return;
+        || !(idptr = malloc (sizeof (*idptr)))
+        || flux_future_aux_set (event_future, "flux::jobid", idptr, free) < 0) {
+        free (idptr);
+        errstr = "flux_job_event_watch";
+        goto error;
+    }
+    *idptr = *orig_id;
+
+    d->delegated_id = delegated_id;
+    if (flux_jobtap_event_post_pack (p,
+                                     *orig_id,
+                                     "delegate::submit",
+                                     "{s:I}",
+                                     "jobid",
+                                     delegated_id)
+        < 0) {
+        errstr = "flux_jobtap_event_post_pack";
+        goto error;
     }
     flux_future_destroy (f);
+    return;
+error:
+    flux_log_error (h,
+                    "%s: submission to specified Flux instance failed: %s",
+                    idf58 (*orig_id),
+                    errstr);
+    flux_jobtap_raise_exception (p, *orig_id, DELEGATION_FAILURE_EXCEPTION, 0, "%s", errstr);
+    flux_future_destroy (wait_future);
+    flux_future_destroy (event_future);
+    flux_future_destroy (f);
+    return;
 }
 /*
  * Remove all dependencies from jobspec.
@@ -249,15 +303,16 @@ static int depend_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *ar
     if (!(d = delegate_job_info_create (id)))
         return flux_jobtap_reject_job (p, args, "error processing delegate: %s", strerror (errno));
 
-    if (flux_jobtap_event_post_pack (p,
-                                     FLUX_JOBTAP_CURRENT_JOB,
-                                     "urgency",
-                                     "{s:i s:i}",
-                                     "userid",
-                                     getuid (),
-                                     "urgency",
-                                     FLUX_JOB_URGENCY_HOLD)
-            < 0
+    if (flux_jobtap_job_subscribe (p, id) < 0
+        || flux_jobtap_event_post_pack (p,
+                                        FLUX_JOBTAP_CURRENT_JOB,
+                                        "urgency",
+                                        "{s:i s:i}",
+                                        "userid",
+                                        getuid (),
+                                        "urgency",
+                                        FLUX_JOB_URGENCY_HOLD)
+               < 0
         || flux_jobtap_job_aux_set (p,
                                     FLUX_JOBTAP_CURRENT_JOB,
                                     "flux::delegate",
@@ -559,11 +614,64 @@ static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args,
     return 0;
 }
 
+static int exception_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
+{
+    flux_t *h = flux_jobtap_get_flux (p);
+    flux_jobid_t job_id;
+    int severity = 1;
+    json_t *context = NULL;
+    const char *name = NULL, *type = NULL;
+    flux_future_t *cancel_future = NULL;
+    struct delegate_job_info *d;
+    if (!h)
+        return -1;
+    if (!(d = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate"))
+        || d->delegated_id == UINT64_MAX)
+        return 0;
+    if (flux_plugin_arg_unpack (args,
+                                FLUX_PLUGIN_ARG_IN,
+                                "{s:I s:{s:s s:o}}",
+                                "id",
+                                &job_id,
+                                "entry",
+                                "name",
+                                &name,
+                                "context",
+                                &context)
+        < 0) {
+        flux_log_error (h, "flux_plugin_arg_unpack");
+        return 0;
+    }
+    if (!name || strcmp (name, "exception") != 0)
+        return 0;
+
+    if (json_unpack (context, "{s:s s:i}", "type", &type, "severity", &severity) < 0) {
+        flux_log_error (h, "unpacking exception context");
+        return 0;
+    }
+    if (severity != 0 || strcmp (type, DELEGATION_FAILURE_EXCEPTION) == 0)
+        return 0;
+    if (!(d->remote)) {
+        flux_log_error (h, "job is delegated but its handle not found");
+        return -1;
+    }
+
+    if (!(cancel_future =
+              flux_job_cancel (d->remote, d->delegated_id, "Cancelled by parent cluster"))
+        || flux_future_then (cancel_future, -1, cancel_callback, p) < 0) {
+        flux_log_error (h, "error cancel");
+        flux_future_destroy (cancel_future);
+        return 0;
+    }
+    return 0;
+}
+
 static const struct flux_plugin_handler tab[] = {
     {"job.state.depend", depend_cb, NULL},
     {"job.state.priority", priority_cb, NULL},
     {"job.state.sched", sched_cb, NULL},
     {"job.state.run", run_cb, NULL},
+    {"job.event.exception", exception_cb, NULL},
     {0},
 };
 
