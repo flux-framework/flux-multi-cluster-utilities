@@ -35,7 +35,7 @@ test_expect_success 'plugin can be loaded' '
 # cancellation down to the delegated job in the TARGET instance.
 #
 test_expect_success 'cancel from source propagates to target' '
-	jobid=$(flux submit --dependency=delegate:random sleep inf) &&
+	jobid=$(flux submit -S system.delegate=random sleep inf) &&
 	flux job wait-event --timeout=60 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
@@ -59,7 +59,7 @@ test_expect_success 'no jobs left running in target after source cancel' '
 # propagate back up as a DelegationFailure exception on the SOURCE job.
 #
 test_expect_success 'cancel from target raises exception on source' '
-	jobid=$(flux submit --dependency=delegate:random sleep inf) &&
+	jobid=$(flux submit -S system.delegate=random sleep inf) &&
 	flux job wait-event --timeout=60 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
