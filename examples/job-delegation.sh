@@ -143,7 +143,7 @@ printf '  Corona target:\n    id: %s\n    uri: %s\n' "${CORONA_CHILD_ID}" "${COR
 # --- Step 4: Allocate Tuolumne target instance ------------------------------
 
 printf '[4/6] Allocating Tuolumne target instance...\n'
-TUO_CHILD_ID="$(flux submit -t 10m -N1 flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
+TUO_CHILD_ID="$(flux submit -q pdebug -t 10m -N1 flux start sleep inf | tail -n 1 | tr -d '[:space:]')"
 LOCAL_CHILD_IDS+=("${TUO_CHILD_ID}")
 wait_for_running "${TUO_CHILD_ID}" "Tuolumne target"
 TUO_URI="$(wait_for_uri "${TUO_CHILD_ID}" "Tuolumne target")"
@@ -176,13 +176,12 @@ sleep 5
 # --- Step 6: Submit trace jobs with their respective policies ---------------
 
 printf '[6/6] Submitting %d trace jobs...\n' "${#TRACE_POLICIES[@]}"
-
 for ((j = 0; j < ${#TRACE_POLICIES[@]}; j++)); do
     policy="${TRACE_POLICIES[$j]}"
-    dep_str="delegate:${policy}"
+    dep_str="system.delegate=${policy}"
     printf '  [%d] policy=%s\n' "${j}" "${policy}"
 
-    if submit_output="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency="${dep_str}" -N1 -n1 hostname 2>&1)"; then
+    if submit_output="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S "${dep_str}" -N1 -n1 hostname 2>&1)"; then
         job_id="$(printf '%s\n' "${submit_output}" | tail -n 1 | tr -d '[:space:]')"
         SUBMITTED_JOB_IDS+=("${job_id}")
 

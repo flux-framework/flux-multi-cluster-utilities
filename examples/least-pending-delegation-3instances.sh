@@ -71,14 +71,14 @@ setup_clusters
 load_plugin_and_config
 
 printf '[4/5] Creating pending load on target-0 (submitting 2 jobs via assign:0)...\n'
-TEST_JOB_1="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency='delegate:assign:0' -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+TEST_JOB_1="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=assign:0 -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_1}" "delegate::submit" >/dev/null 2>&1 || true
-TEST_JOB_2="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency='delegate:assign:0' -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+TEST_JOB_2="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=assign:0 -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_2}" "delegate::submit" >/dev/null 2>&1 || true
 printf 'Pending jobs on target-0: %s, %s\n\n' "${TEST_JOB_1}" "${TEST_JOB_2}"
 
-printf '[5/5] Submitting job with --dependency=delegate:least_pending ...\n'
-JOB_ID="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:least_pending -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+printf '[5/5] Submitting job with -S system.delegate=least_pending ...\n'
+JOB_ID="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=least_pending -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 printf '  Submitted job id: %s\n\n' "${JOB_ID}"
 
 # Wait for the job to finish

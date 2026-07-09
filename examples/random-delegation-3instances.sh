@@ -71,14 +71,14 @@ setup_clusters
 
 load_plugin_and_config
 
-printf '[4/5] Submitting 4 test jobs with --dependency=delegate:random ...\n'
-TEST_JOB_1="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+printf '[4/5] Submitting 4 test jobs with -S system.delegate=random ...\n'
+TEST_JOB_1="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_1}" "delegate::submit" >/dev/null 2>&1 || true
-TEST_JOB_2="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+TEST_JOB_2="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_2}" "delegate::submit" >/dev/null 2>&1 || true
-TEST_JOB_3="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+TEST_JOB_3="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_3}" "delegate::submit" >/dev/null 2>&1 || true
-TEST_JOB_4="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
+TEST_JOB_4="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=random -t 5m -N1 -n1 hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60 "${TEST_JOB_4}" "delegate::submit" >/dev/null 2>&1 || true
 printf 'Submitted test jobs: %s, %s, %s, %s\n\n' "${TEST_JOB_1}" "${TEST_JOB_2}" "${TEST_JOB_3}" "${TEST_JOB_4}"
 

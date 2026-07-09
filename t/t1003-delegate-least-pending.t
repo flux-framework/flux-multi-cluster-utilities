@@ -29,14 +29,14 @@ test_expect_success 'configure delegate plugin with two target URIs and load it'
 test_expect_success 'submit 2 jobs with assign policy to target_0 without waiting (to create pending load)' '
 	# Submit first job explicitly to target_0 using assign:0 WITHOUT waiting for completion.
 	# This ensures the job will be in "pending" state on target_0 when we query for least_pending.
-	jobid_0a=$(flux submit --dependency=delegate:assign:0 hostname) &&
+	jobid_0a=$(flux submit -S system.delegate=assign:0 hostname) &&
 
 	# Wait for first job to be delegated to target_0 before submitting second
 	flux job wait-event --timeout=60 ${jobid_0a} "delegate::submit" &&
 
 	# Submit second job also to target_0 using assign:0 WITHOUT waiting for completion.
 	# Now target_0 should have 2 pending jobs while target_1 has 0.
-	jobid_0b=$(flux submit --dependency=delegate:assign:0 hostname)
+	jobid_0b=$(flux submit -S system.delegate=assign:0 hostname)
 '
 
 test_expect_success 'least_pending policy delegates to target_1 (lower pending count)' '
@@ -47,7 +47,7 @@ test_expect_success 'least_pending policy delegates to target_1 (lower pending c
 	# Submit a job with least_pending policy.
 	# Target 0 has 2 pending jobs, target 1 has 0 pending jobs.
 	# The least_pending policy should select target_1 since it has fewer pending jobs.
-	jobid=$(flux submit --dependency=delegate:least_pending hostname) &&
+	jobid=$(flux submit -S system.delegate=least_pending hostname) &&
 
 	# Wait for the delegate::submit event to get the delegated job ID
 	flux job wait-event --timeout=60 ${jobid} "delegate::submit" &&
@@ -64,7 +64,7 @@ test_expect_success 'least_pending policy delegates to target_1 (lower pending c
 
 test_expect_success 'least_pending: verify delegated job completes successfully on target_1' '
 	# Submit another job with least_pending policy for a second verification
-	jobid2=$(flux submit --dependency=delegate:least_pending hostname) &&
+	jobid2=$(flux submit -S system.delegate=least_pending hostname) &&
 
 	# Wait for delegate::submit event to get the delegated ID
 	flux job wait-event --timeout=60 ${jobid2} "delegate::submit" &&
@@ -90,7 +90,7 @@ test_expect_success 'wait for previously submitted assign:0 jobs to complete' '
 test_expect_success 'assign:0 still works after least_pending tests (deterministic selection)' '
 	# Verify assign policy is not affected by least_pending tests.
 	# assign:0 should always select target_0 regardless of pending counts.
-	jobid=$(flux submit --dependency=delegate:assign:0 hostname) &&
+	jobid=$(flux submit -S system.delegate=assign:0 hostname) &&
 	flux job wait-event --timeout=60 ${jobid} clean &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit" &&
 	delegated_id=$(flux job eventlog ${jobid} |
@@ -102,7 +102,7 @@ test_expect_success 'assign:0 still works after least_pending tests (determinist
 test_expect_success 'assign:1 still works after least_pending tests (deterministic selection)' '
 	# Verify assign policy for target_1 is not affected.
 	# assign:1 should always select target_1 regardless of pending counts.
-	jobid=$(flux submit --dependency=delegate:assign:1 hostname) &&
+	jobid=$(flux submit -S system.delegate=assign:1 hostname) &&
 	flux job wait-event --timeout=60 ${jobid} clean &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit" &&
 	delegated_id=$(flux job eventlog ${jobid} |
@@ -113,14 +113,14 @@ test_expect_success 'assign:1 still works after least_pending tests (determinist
 
 test_expect_success 'random policy delegation still works after least_pending tests' '
 	# Verify random policy is not affected by least_pending tests.
-	jobid=$(flux submit --dependency=delegate:random hostname) &&
+	jobid=$(flux submit -S system.delegate=random hostname) &&
 	flux job attach ${jobid} &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit"
 '
 
 test_expect_success 'shortest_match policy delegation still works after least_pending tests' '
 	# Verify shortest_match policy is not affected by least_pending tests.
-	jobid=$(flux submit --dependency=delegate:shortest_match hostname) &&
+	jobid=$(flux submit -S system.delegate=shortest_match hostname) &&
 	flux job attach ${jobid} &&
 	flux job eventlog ${jobid} | grep -q "delegate::submit"
 '

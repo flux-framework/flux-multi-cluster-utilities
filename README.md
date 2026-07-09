@@ -73,9 +73,8 @@ in the next steps.
 ```
 $ flux uri fkw8xbpB                        # Local URI
 ssh://tuolumne1031/var/tmp/namankul/flux-sOzON0/local-0
-
-
 ```
+
 #### 4. Build the config file.
 The jobtap plugin requires a config file to be loaded, containing the URI for all the sub-instances. In our example the config script will contains the URI of B sub-instance.
 
@@ -111,10 +110,10 @@ to Instance B from Instance A. Our output should be `tuolumne[1031,1032]` as we 
 executing on Instance B. We are using random policy for this, but users can select from multiple policies.
 
 ```
-$  flux submit -N 2 -n 2 --dependency=delegate:random hostname
+$  flux submit -N 2 -n 2 -S system.delegate=random hostname
 f5WMtyYTH
-
 ```
+
 #### 6. View the results of the job.
 
 There are two ways to view the results of the job that was delegated to Instance B.

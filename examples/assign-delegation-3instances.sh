@@ -51,7 +51,7 @@ cat "${CONFIG_FILE}" | flux proxy "${SOURCE_INSTANCE}" flux config load
 flux proxy "${SOURCE_INSTANCE}" flux jobtap load "${PLUGIN_PATH}"
 
 printf '[4/5] Submitting with assign policy to target index 2.\n'
-JOB_ID="$(flux proxy "${SOURCE_INSTANCE}" flux submit --dependency=delegate:assign:2 -t60s hostname | tail -n 1 | tr -d '[:space:]')"
+JOB_ID="$(flux proxy "${SOURCE_INSTANCE}" flux submit -S system.delegate=assign:2 -t60s hostname | tail -n 1 | tr -d '[:space:]')"
 flux proxy "${SOURCE_INSTANCE}" flux job wait-event --timeout=60s "${JOB_ID}" clean
 
 DELEGATED_ID="$(flux proxy "${SOURCE_INSTANCE}" flux job eventlog "${JOB_ID}" |
