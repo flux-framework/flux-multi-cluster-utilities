@@ -9,16 +9,9 @@
 \************************************************************/
 
 #include <flux/core.h>
-
 /* Initialize the selection logic.
  */
 struct cluster_config *selection_init (flux_t *h);
-/* creates the copy of cluster config.
- */
-struct cluster_config *copy_config (struct cluster_config *config);
-/* Remove URI from a given config
- */
-int config_remove_uri (struct cluster_config *config, const char *uri);
 /* Tear down the selection logic.
  */
 void selection_destroy (struct cluster_config *config);
