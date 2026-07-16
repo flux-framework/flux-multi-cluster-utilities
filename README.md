@@ -28,8 +28,8 @@ Supported delegation policies are `random`, `least_pending`, `shortest_match`,
 and `assign`.
 
 ### Loading a JobTap Plugin
-The plugin can be loaded with the command below. 
-Note that an absolute path needs to be specified here. 
+The plugin can be loaded with the command below. But,  
+note that an absolute path needs to be specified here. 
 `flux jobtap load $(realpath path/to/plugin/delegate.so)`
 
 ### Interactive Testing on Peer-to-Peer Flux Instances
@@ -52,18 +52,17 @@ This can be done using `srun -N4 -n4 flux start -N4` or `srun --tasks-per-node=1
 #### 2. Create two child flux instances (A and B) and split the resources among them. 
 
 ```
-$ flux resource list    # Verify that the top-level instance has 4 nodes
-
-    STATE PROPERTIES NNODES   NCORES    NGPUS NODELIST
-      free pbatch          4      192       32 corona[189-192]
- allocated                 0        0        0 
-      down                 0        0        0 
+$ flux alloc -N 4 -q pdebug
+     STATE NNODES NCORES NGPUS NODELIST # Verify that top level instance has 4 nodes.
+      free      4    384    16 tuolumne[1036-1038,1042]
+ allocated      0      0     0
+      down      0      0     0
 
 $ flux submit -N2 flux start sleep inf      # Launch a child instance, Instance A, on 2 nodes 
-fNGFMaMu
+fmerUPiw
 
 $ flux submit -N2 flux start sleep inf      # Launch another child instance, Instance B on 2 nodes. 
-fPhtF4SB
+fkw8xbpB
 ```
 
 #### 3. Obtain the URI for Instance B, which we want to delegate to.
@@ -72,52 +71,50 @@ and then convert this to a remote URI using `flux uri --remote`. We use the remo
 in the next steps.
 
 ```
-$ flux proxy fPhtF4SB flux getattr local-uri                        # Local URI
-local:///var/tmp/patki1/flux-sCMd4I/local-0
-
-$ flux uri --remote local:///var/tmp/patki1/flux-sCMd4I/local-0     # Remote URI
-ssh://corona189/var/tmp/patki1/flux-sCMd4I/local-0
+$ flux uri fkw8xbpB                        # Local URI
+ssh://tuolumne1031/var/tmp/namankul/flux-sOzON0/local-0
 ```
 
-#### 4. Proxy to Instance A, and load the jobtap plugin.
+#### 4. Build the config file.
+The jobtap plugin requires a config file to be loaded, containing the URI for all the sub-instances. In our example the config script will contains the URI of B sub-instance.
+
+```
+echo 'delegate=["ssh://tuolumne1031/var/tmp/namankul/flux-sOzON0/local-0"]' > config.toml
+```
+
+#### 4. Proxy to Instance A, and load the config and jobtap plugin.
 We now have all the information to submit to Instance B,  so we `proxy` to 
 Instance A and load the jobtap plugin. 
 
 ```
-$ flux proxy fNGFMaMu       # Use the Job ID for Instance A
+$ flux proxy fmerUPiw 
+$ flux resource list
+     STATE NNODES NCORES NGPUS NODELIST
+      free      2      2     0 tuolumne[1029-1030]
+ allocated      0      0     0
+      down      0      0     0
 
-$ flux resource list        # Verify that we have 2 nodes, and note their hostnames.
-     STATE PROPERTIES NNODES   NCORES    NGPUS NODELIST
-      free pbatch          2       96       16 corona[191-192]
- allocated                 0        0        0 
-      down                 0        0        0 
+$ flux config load config.toml
 
-$ $ flux jobtap load <path-to-plugin>/delegate.so 
+$ flux config get delegate ## check the config file has been loaded
+["ssh://tuolumne1031/var/tmp/namankul/flux-sOzON0/local-0"]
+
+$ flux jobtap load <path-to-plugin>/delegate.so 
 ```
-Here, we note that Instance A has resources `corona[191-192]`, and as a result, 
-Instance B has resources `corona[189-190]` (can be verified similarly). 
+Here, we note that Instance A has resources `tuolumne[1029,1030]`, and as a result, 
+Instance B has resources `tuolumne[1021,1032]` (can be verified similarly). 
 
 #### 5. Submit a job from Instance A to Instance B.
-Finally, we submit a job (`hostname -N2 -n2` in our example) 
-to Instance B from Instance A. Our output should be `corona[189-190]` as we are 
-executing on Instance B. 
+Finally, we submit a job (`-N 2 -n 2 hostname` in our example) 
+to Instance B from Instance A. Our output should be `tuolumne[1031,1032]` as we are 
+executing on Instance B. We are using random policy for this, but users can select from multiple policies.
 
 ```
-$  flux submit --dependency=delegate:ssh://corona189/var/tmp/patki1/flux-sCMd4I/local-0 -N2 -n2 hostname
-f7Qv4KHXM
+$  flux submit -N 2 -n 2 -S system.delegate=random hostname
+f5WMtyYTH
 ```
 
-#### 6. View the status of the job from Instance A.
-Delegation was successful! Note that this is currently reported 
-as an _exception_ state, as we do not have a _delegate_ state for jobs
-within Flux at the time of writing this plugin. 
-
-```
-flux job attach f7Qv4KHXM
-0.573s: job.exception type=DelegationSuccess severity=0 
-```
-
-#### 7. View the results of the job.
+#### 6. View the results of the job.
 
 There are two ways to view the results of the job that was delegated to Instance B.
 
@@ -126,41 +123,59 @@ Here, we obtain the corresponding Job ID on Instance B using `flux job eventlog`
 and then using `flux job attach` with `flux proxy`, as shown below. 
 Note here that we use `flux proxy --parent` as the ID for
 Instance B is associated with the top-level original instance and was created in step 2. 
-Our output correctly shows `corona[189-190]` for Instance B. 
+Our output correctly shows `tuolumne[1031-32]` for Instance B. 
 
 ```
 $ flux job eventlog f7Qv4KHXM
-1726788422.214450 submit userid=36985 urgency=16 flags=0 version=1
-1726788422.510129 dependency-add description="delegated"
-1726788422.510808 validate
-1726788422.711362 delegated jobid=14112474005504
-1726788422.787900 exception type="DelegationSuccess" severity=0 note="" userid=36985
-1726788422.787967 clean
+1782951380.102527 submit userid=63561 urgency=16 flags=0 version=1
+1782951382.566925 dependency-add description="delegated"
+1782951382.566981 set-flags flags=["alloc-bypass"]
+1782951382.567994 validate
+1782951382.777669 delegate::submit jobid=10007240245248
+1782951382.821055 delegate::start timestamp=1782951382.7901998
+1782951382.887310 dependency-remove description="delegated"
+1782951382.887330 depend
+1782951382.887369 priority priority=16
+1782951382.888354 alloc bypass=true
+1782951382.893923 start
+1782951382.984527 finish status=0
+1782951382.986243 release ranks="all" final=true
+1782951382.986264 free
+1782951382.986273 clean
 
 
-$ flux job id --to=f58 14112474005504           # Convert the JobID obtained from eventlog to the f58 format
-f7PiE17dH
+$ flux job id --to=f58 10007240245248           # Convert the JobID obtained from eventlog to the f58 format
+f5XseZ2u5
 
-$ flux --parent proxy fPhtF4SB flux job attach f7PiE17dH
-corona189
-corona190
+$ flux --parent proxy fkw8xbpB flux job attach f5XseZ2u5
+tuolumne1031
+tuolumne1032
 ```
 
 In the second approach, we can `proxy` to Instance B and examine the results of the job
 as shown below.
 
 ```
-$ flux --parent proxy fPhtF4SB 
+$ flux --parent proxy fkw8xbpB 
 
 $ flux jobs -a
        JOBID USER     NAME       ST NTASKS NNODES     TIME INFO
-   f7PiE17dH patki1   hostname   CD      2      2   0.074s corona[189-190]
+  f5XseZ2u5 namankul hostname   CD      2      2   0.105s tuolumne[1031-1032]
 
-$ flux job attach f7PiE17dH
-corona189
-corona190
+
+$ flux job attach f5XseZ2u5
+tuolumne1031
+tuolumne1032
 ```
 
+### Job Lifecycle: Cancellation and Exception Propagation
+
+A user can kill a job that has already been delegated to another instance with the following command:
+```
+flux cancel ${jobid}
+```
+
+Another feature handles exceptions: if a job on a target cluster encounters an exception, and that exception is of an eligible type, the job is automatically resubmitted to a different cluster. Currently, the handled exceptions are of type `alloc` — these typically occur when a job requests more nodes or a longer runtime than the target cluster's limits allow.
 ### Testing Using Docker
 
 A Dockerfile with el9 has also been provided for testing in a reproducible containerized environment.
@@ -179,7 +194,7 @@ flux submit -n1 -c2 flux start sleep inf
 
 ### Example Scripts
 
-The [examples/](examples) directory contains standalone scripts demonstrating
+The [examples/](examples) directory contains standalone scripts illustrating
 delegation policies. See [examples/README.md](examples/README.md) for a full
 description of each script.
 
