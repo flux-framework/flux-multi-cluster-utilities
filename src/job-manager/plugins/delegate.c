@@ -39,8 +39,10 @@ static void submit_callback (flux_future_t *f, void *arg);
 /*
  * Callback firing when job has completed.
  */
-
-static void source_cancel_job (flux_plugin_t *p, flux_jobid_t *id, bool success, const char *errstr)
+static void restore_default_urgency (flux_plugin_t *p,
+                                     flux_jobid_t *id,
+                                     bool success,
+                                     const char *errstr)
 {
     if (success) {
         if (flux_jobtap_event_post_pack (p,
@@ -79,7 +81,7 @@ static void cancel_callback (flux_future_t *f, void *arg)
     flux_future_destroy (f);
 }
 
-int submit_job (flux_plugin_t *p, struct delegate_job_info *d)
+static int submit_job (flux_plugin_t *p, struct delegate_job_info *d)
 {
     flux_t *h = flux_jobtap_get_flux (p);
     flux_future_t *jobid_future = NULL;
@@ -106,10 +108,7 @@ int submit_job (flux_plugin_t *p, struct delegate_job_info *d)
     }
 
     delegate_set_remote (d, remote);
-    if (!(jobid_future = flux_job_submit (d->remote,
-                                          d->clean_jobspec,
-                                          FLUX_JOB_URGENCY_DEFAULT,
-                                          FLUX_JOB_WAITABLE))
+    if (!(jobid_future = flux_job_submit (d->remote, d->clean_jobspec, FLUX_JOB_URGENCY_DEFAULT, 0))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", &d->id, NULL) < 0) {
         errstr = "could not delegate job to specified Flux instance";
@@ -210,6 +209,8 @@ static void event_callback (flux_future_t *f, void *arg)
             /* Job was handed off to a new target. This future is retired --
              * it no longer speaks for the source job's outcome. */
             d->authoritative_future = NULL;
+            flux_future_destroy (f);
+            return;
         }
     } else if (!strcmp (name, "clean")) {
         /* Only the authoritative future's "clean" reflects the job's real
@@ -220,10 +221,10 @@ static void event_callback (flux_future_t *f, void *arg)
             return;
         }
         bool success = !d->last_attempt_failed;
-        source_cancel_job (p,
-                           id,
-                           success,
-                           success ? "Successfully delegated job" : "unhandled exception");
+        restore_default_urgency (p,
+                                 id,
+                                 success,
+                                 success ? "Successfully delegated job" : "unhandled exception");
         flux_future_destroy (f);
         return;
     }
@@ -486,12 +487,12 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
     }
     d->delegate_policy = strdup (strategy);
     d->job_cluster_config = copy_config (config);
-    d->clean_jobspec = strdup (encoded_jobspec);
+    d->clean_jobspec = encoded_jobspec;
+    encoded_jobspec = NULL;
     if (submit_job (p, d) < 0) {
         flux_log_error (h, "priority_cb: job submission failure");
         goto error;
     }
-    free (encoded_jobspec);
 
     return 0;
 

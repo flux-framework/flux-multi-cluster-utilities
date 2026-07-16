@@ -25,7 +25,6 @@ check_job_visible () {
 	uri=$1
 	jid=$2
 	flux proxy "$uri" flux jobs --format='{id}' "$jid" >/dev/null 2>&1
-  
 }
 raise_alloc () {
 	uri=$1

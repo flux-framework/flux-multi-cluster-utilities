@@ -15,6 +15,6 @@ noinst_LTLIBRARIES = libselect.la
 
 libselect_la_SOURCES = \
 	select.h \
-	select.c \ 
-  cluster_config.h \
+	select.c \
+	cluster_config.h \
 	cluster_config.c

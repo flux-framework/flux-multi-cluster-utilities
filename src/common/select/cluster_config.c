@@ -75,7 +75,7 @@ int load_config (struct cluster_config *config)
         return -1;
     }
 
-    if (flux_conf_unpack (conf, &error, "{s?O}", "delegate", &delegate) < 0) {
+    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
         flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
         return -1;
     }
