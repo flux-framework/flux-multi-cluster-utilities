@@ -28,8 +28,8 @@ Supported delegation policies are `random`, `least_pending`, `shortest_match`,
 and `assign`.
 
 ### Loading a JobTap Plugin
-The plugin can be loaded with the command below. But, before that 
-Note that an absolute path needs to be specified here. 
+The plugin can be loaded with the command below. But,  
+note that an absolute path needs to be specified here. 
 `flux jobtap load $(realpath path/to/plugin/delegate.so)`
 
 ### Interactive Testing on Peer-to-Peer Flux Instances
@@ -168,6 +168,14 @@ tuolumne1031
 tuolumne1032
 ```
 
+### Job Lifecycle: Cancellation and Exception Propagation
+
+A user can kill a job that has already been delegated to another instance with the following command:
+```
+flux cancel ${jobid}
+```
+
+Another feature handles exceptions: if a job on a target cluster encounters an exception, and that exception is of an eligible type, the job is automatically resubmitted to a different cluster. Currently, the handled exceptions are of type `alloc` — these typically occur when a job requests more nodes or a longer runtime than the target cluster's limits allow.
 ### Testing Using Docker
 
 A Dockerfile with el9 has also been provided for testing in a reproducible containerized environment.
