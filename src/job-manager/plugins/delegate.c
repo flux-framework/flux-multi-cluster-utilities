@@ -35,7 +35,12 @@
 #define DELEGATION_FAILURE_EXCEPTION "DelegationFailure"
 
 static void submit_callback (flux_future_t *f, void *arg);
-
+enum exception_action {
+    JOB_EXCEPTION_IGNORED = 0, /* severity > 0: no effect, keep watching     */
+    JOB_EXCEPTION_RESUBMITTED, /* severity 0, alloc: handed off to new target */
+    JOB_EXCEPTION_TERMINAL,    /* severity 0, non-alloc: job really ends here */
+    JOB_EXCEPTION_ERROR = -1   /* bad context or resubmit_job() itself failed */
+};
 /*
  * Callback firing when job has completed.
  */
@@ -107,8 +112,7 @@ static int submit_job (flux_plugin_t *p, struct delegate_job_info *d)
         return -1;
     }
 
-    delegate_set_remote (d, remote);
-    if (!(jobid_future = flux_job_submit (d->remote, d->clean_jobspec, FLUX_JOB_URGENCY_DEFAULT, 0))
+    if (!(jobid_future = flux_job_submit (remote, d->clean_jobspec, FLUX_JOB_URGENCY_DEFAULT, 0))
         || flux_future_then (jobid_future, -1, submit_callback, p) < 0
         || flux_future_aux_set (jobid_future, "flux::jobid", &d->id, NULL) < 0) {
         errstr = "could not delegate job to specified Flux instance";
@@ -116,6 +120,7 @@ static int submit_job (flux_plugin_t *p, struct delegate_job_info *d)
         flux_future_destroy (jobid_future);
         return -1;
     }
+    delegate_set_remote (d, remote);
     return 0;
 }
 
@@ -133,6 +138,7 @@ static int resubmit_job (flux_plugin_t *p, flux_jobid_t *id)
     }
     return 0;
 }
+
 static int handle_job_exception (flux_plugin_t *p,
                                  flux_future_t *f,
                                  flux_jobid_t *id,
@@ -140,21 +146,24 @@ static int handle_job_exception (flux_plugin_t *p,
 {
     const char *type;
     int severity;
-    const char *note;
-    if (json_unpack (context, "{s:s s:i s:s}", "type", &type, "severity", &severity, "note", &note)
-        < 0) {
+
+    if (json_unpack (context, "{s:s s:i}", "type", &type, "severity", &severity) < 0) {
         errno = EINVAL;
-        return -1;
+        return JOB_EXCEPTION_ERROR;
     }
+
+    if (severity > 0)
+        return JOB_EXCEPTION_IGNORED;
+
     if (!strcmp (type, "alloc")) {
         if (resubmit_job (p, id) < 0) {
-            flux_log_error (flux_jobtap_get_flux (p),
-                            "Exception Handling : Unable to resubmit job");
-            return -1;
+            flux_log_error (flux_jobtap_get_flux (p), "Exception Handling: Unable to resubmit job");
+            return JOB_EXCEPTION_ERROR;
         }
-    } else
-        return -1;
-    return 0;
+        return JOB_EXCEPTION_RESUBMITTED;
+    }
+
+    return JOB_EXCEPTION_TERMINAL;
 }
 /*
  * Callback firing when target events are ready.
@@ -200,17 +209,29 @@ static void event_callback (flux_future_t *f, void *arg)
             flux_future_reset (f);
             return;
         }
-        if (handle_job_exception (p, f, id, context) < 0) {
-            /* No further target to hand this job to. This future remains
-             * authoritative, and its upcoming "clean" should report failure. */
-            flux_log_error (h, "Exception handling failed for the job %s", idf58 (*id));
-            d->last_attempt_failed = true;
-        } else {
-            /* Job was handed off to a new target. This future is retired --
-             * it no longer speaks for the source job's outcome. */
-            d->authoritative_future = NULL;
-            flux_future_destroy (f);
-            return;
+        switch (handle_job_exception (p, f, id, context)) {
+            case JOB_EXCEPTION_IGNORED:
+                /* severity > 0: no effect, this future stays authoritative,
+                 * just keep watching  */
+                break;
+
+            case JOB_EXCEPTION_RESUBMITTED:
+                /* handed off to a new target; this future is retired */
+                d->authoritative_future = NULL;
+                flux_future_destroy (f);
+                return;
+
+            case JOB_EXCEPTION_TERMINAL:
+                /* fatal exception, no resubmission attempted; job really
+                 * ends here, let the upcoming "clean" report the real failure */
+                d->last_attempt_failed = true;
+                break;
+
+            case JOB_EXCEPTION_ERROR:
+            default:
+                flux_log_error (h, "Exception handling failed for the job %s", idf58 (*id));
+                d->last_attempt_failed = true;
+                break;
         }
     } else if (!strcmp (name, "clean")) {
         /* Only the authoritative future's "clean" reflects the job's real
