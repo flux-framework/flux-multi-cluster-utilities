@@ -16,18 +16,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syslog.h>
 #include <time.h>
 #include <unistd.h>
 #include <jansson.h>
 
 #include "select.h"
-
-struct cluster_config {
-    flux_t *h;
-    char **uris;        /* Array of cluster URIs */
-    size_t count;       /* Number of clusters */
-    bool random_seeded; /* Random seed initialized flag */
-};
+#include "cluster_config.h"
 
 enum selection_metric_kind {
     SELECTION_METRIC_MATCH_TIME,
@@ -41,73 +36,6 @@ struct selection_metric {
         int64_t pending_jobs;
     } value;
 };
-
-static void free_uris (struct cluster_config *config)
-{
-    size_t index;
-
-    if (!config || !config->uris)
-        return;
-    for (index = 0; index < config->count; index++)
-        free (config->uris[index]);
-    free (config->uris);
-    config->uris = NULL;
-    config->count = 0;
-}
-
-static int load_config (struct cluster_config *config)
-{
-    flux_error_t error;
-    json_t *delegate = NULL;
-    const flux_conf_t *conf;
-    size_t index;
-    json_t *value;
-
-    if (!(conf = flux_get_conf (config->h))) {
-        flux_log_error (config->h, "flux_get_conf");
-        return -1;
-    }
-
-    if (flux_conf_unpack (conf, &error, "{s?o}", "delegate", &delegate) < 0) {
-        flux_log (config->h, LOG_ERR, "flux_conf_unpack: %s", error.text);
-        return -1;
-    }
-
-    if (!delegate || !json_is_array (delegate)) {
-        config->count = 0;
-        config->uris = NULL;
-        return 0;
-    }
-
-    config->count = json_array_size (delegate);
-    if (config->count == 0) {
-        config->uris = NULL;
-        return 0;
-    }
-    if (!(config->uris = calloc (config->count, sizeof (char *)))) {
-        flux_log_error (config->h, "calloc");
-        return -1;
-    }
-
-    json_array_foreach (delegate, index, value) {
-        const char *uri;
-        if (!json_is_string (value)) {
-            flux_log (config->h, LOG_ERR, "delegate array contains non-string");
-            goto error;
-        }
-        uri = json_string_value (value);
-        if (!(config->uris[index] = strdup (uri))) {
-            flux_log_error (config->h, "strdup");
-            goto error;
-        }
-    }
-
-    return 0;
-error:
-    config->count = index;
-    free_uris (config);
-    return -1;
-}
 
 struct cluster_config *selection_init (flux_t *h)
 {
@@ -131,8 +59,7 @@ void selection_destroy (struct cluster_config *config)
 {
     if (!config)
         return;
-    free_uris (config);
-    free (config);
+    cluster_config_destroy (config);
 }
 
 static bool selection_has_clusters (struct cluster_config *config, const char *strategy_name)

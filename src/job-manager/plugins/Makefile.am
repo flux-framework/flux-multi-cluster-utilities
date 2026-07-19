@@ -14,7 +14,8 @@ jobtap_LTLIBRARIES = \
 	delegate.la
 
 delegate_la_SOURCES = \
-	delegate.c
+	delegate.c \
+	delegate_job.c 
 
 delegate_la_LDFLAGS = \
 	$(AM_LDFLAGS) \

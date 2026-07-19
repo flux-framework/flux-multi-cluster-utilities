@@ -20,7 +20,8 @@ TESTSCRIPTS = \
 	t0000-sharness.t \
 	t1000-delegate-load.t \
 	t1001-delegate-assign.t \
-	t1002-delegate-cancel.t
+	t1002-delegate-cancel.t \
+	t1003-delegate-exception.t
 
 # dist_check_SCRIPTS are built and installed for 'make distcheck'
 dist_check_SCRIPTS = \
