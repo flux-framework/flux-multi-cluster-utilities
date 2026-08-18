@@ -42,7 +42,7 @@ test_expect_success 'plugin can be loaded with old format config' '
 '
 
 test_expect_success 'random policy works with old format' '
-	jobid=$(flux submit -S system.delegate=random sleep 1) &&
+	jobid=$(flux submit -S system.delegate=random hostname) &&
 	flux job wait-event -t 5 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
@@ -51,7 +51,7 @@ test_expect_success 'random policy works with old format' '
 '
 
 test_expect_success 'assign policy works with old format - target 0' '
-	jobid=$(flux submit -S system.delegate=assign:0 sleep 1) &&
+	jobid=$(flux submit -S system.delegate=assign:0 hostname) &&
 	flux job wait-event -t 5 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
@@ -59,7 +59,7 @@ test_expect_success 'assign policy works with old format - target 0' '
 '
 
 test_expect_success 'assign policy works with old format - target 1' '
-	jobid=$(flux submit -S system.delegate=assign:1 sleep 1) &&
+	jobid=$(flux submit -S system.delegate=assign:1 hostname) &&
 	flux job wait-event -t 5 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
