@@ -72,7 +72,7 @@ struct cluster_config *copy_config (struct cluster_config *config)
     return new_config;
 }
 
-int config_remove_uri (struct cluster_config *config, const char *uri)
+int config_remove_instance (struct cluster_config *config, const char *uri)
 {
     bool found = false;
 

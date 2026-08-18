@@ -20,11 +20,12 @@ struct cluster_config {
  */
 struct cluster_config *copy_config (struct cluster_config *config);
 
-/* Remove a URI from a given config.
+/* Remove an instance from a given config.
  *
- * Searches config->uris for an entry matching 'uri' and removes it,
- * shrinking the 'uris' array and decrementing 'count' accordingly.
- * If 'uri' is not found in the config, no changes are made.
+ * Searches config->uris for an entry matching 'uri' and removes it
+ * along with its corresponding label, shrinking the arrays and
+ * decrementing 'count' accordingly. If 'uri' is not found in the
+ * config, no changes are made.
  *
  * config - the cluster_config to modify (must not be NULL)
  * uri    - the URI string to remove (must not be NULL)
@@ -33,7 +34,7 @@ struct cluster_config *copy_config (struct cluster_config *config);
  * or -1 on error (e.g. uri not found, or allocation failure while
  * resizing the array), with errno set appropriately.
  */
-int config_remove_uri (struct cluster_config *config, const char *uri);
+int config_remove_instance (struct cluster_config *config, const char *uri);
 
 /* Load cluster configuration from the broker into 'config'.
  *
