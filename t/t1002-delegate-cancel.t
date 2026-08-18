@@ -36,15 +36,15 @@ test_expect_success 'plugin can be loaded' '
 #
 test_expect_success 'cancel from source propagates to target' '
 	jobid=$(flux submit -S system.delegate=random sleep inf) &&
-	flux job wait-event --timeout=60 ${jobid} delegate::submit &&
+	flux job wait-event -vt 10 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
 	# the delegated job is actually running in the target
-	flux proxy ${uri_0} flux job wait-event --timeout=60 ${delegated_id} start &&
+	flux proxy ${uri_0} flux job wait-event -vt 10 ${delegated_id} start &&
 	# cancel from the source side
 	flux cancel ${jobid} &&
-	flux job wait-event --timeout=60 ${jobid} clean &&
-	flux proxy ${uri_0} flux job wait-event --timeout=60 ${delegated_id} clean &&
+	flux job wait-event -vt 10 ${jobid} clean &&
+	flux proxy ${uri_0} flux job wait-event -vt 10 ${delegated_id} clean &&
 	flux proxy ${uri_0} flux job eventlog ${delegated_id} |
 		grep -E "exception" | grep -q "cancel"
 '
@@ -60,20 +60,20 @@ test_expect_success 'no jobs left running in target after source cancel' '
 #
 test_expect_success 'cancel from target raises exception on source' '
 	jobid=$(flux submit -S system.delegate=random sleep inf) &&
-	flux job wait-event --timeout=60 ${jobid} delegate::submit &&
+	flux job wait-event -vt 10 ${jobid} delegate::submit &&
 	delegated_id=$(extract_delegated_id ${jobid}) &&
 	test -n "${delegated_id}" &&
-	flux proxy ${uri_0} flux job wait-event --timeout=60 ${delegated_id} start &&
+	flux proxy ${uri_0} flux job wait-event -vt 10 ${delegated_id} start &&
 	# cancel the delegated job *inside* the target instance
 	flux proxy ${uri_0} flux cancel ${delegated_id} &&
 	# wait_callback should raise DelegationFailure on the source job
-	flux job wait-event --timeout=60 \
+	flux job wait-event -vt 10 \
 		--match-context=type=DelegationFailure ${jobid} exception &&
 	flux job eventlog ${jobid} | grep -q "DelegationFailure"
 '
 
 test_expect_success 'source job is inactive after target-side cancel' '
-	flux job wait-event --timeout=60 ${jobid} clean
+	flux job wait-event -vt 10 ${jobid} clean
 '
 
 test_expect_success 'unload delegate plugin' '

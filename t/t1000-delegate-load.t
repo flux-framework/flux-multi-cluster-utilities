@@ -36,8 +36,16 @@ test_expect_success 'plugin can be loaded' '
 
 test_expect_success 'delegation submission works' '
 	jobid=$(flux submit -S system.delegate=random hostname) &&
-	flux job attach $jobid &&
-	flux job eventlog -H $jobid
+	flux job wait-event -vt 2 ${jobid} delegate::submit &&
+	delegated_id=$(flux job eventlog ${jobid} |
+		sed -nE "/delegate::submit/ s/.*jobid[\"=:[:space:]]+(\"?)([^\",}[:space:]]+).*/\2/p" |
+		head -n 1) &&
+	flux proxy ${URI} flux job wait-event -vt 5 -m status=0 "${delegated_id}" finish &&
+	flux proxy ${URI} flux job attach "${delegated_id}" | grep $(hostname) &&
+	flux job wait-event -t 5 ${jobid} start &&
+	flux job wait-event -t 5 -m status=0 ${jobid} finish &&
+	flux job wait-event -vt 5 ${jobid} clean &&
+	flux job attach $jobid 2>&1 | grep "No job output found"
 '
 
 test_expect_success 'delegated dependent job runs after first job completes' '
@@ -46,9 +54,10 @@ test_expect_success 'delegated dependent job runs after first job completes' '
 	test_must_fail flux job wait-event -vt 2 ${job2} start &&
 	flux cancel ${job1} &&
 	flux job wait-event -t 1 ${job1} clean &&
-	flux job wait-event -vt 1 ${job2} start &&
-	flux job attach ${job2} &&
-	flux job eventlog -H ${job2}
+	flux job wait-event -vt 5 ${job2} start &&
+	flux job wait-event -t 5 -m status=0 ${job2} finish &&
+	flux job wait-event -t 5 ${job2} clean &&
+	flux job attach ${job2} 2>&1 | grep "No job output found"
 '
 test_expect_success 'cancel subinstances' '
 	flux cancel --all

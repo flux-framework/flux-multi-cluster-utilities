@@ -41,6 +41,16 @@ enum exception_action {
     JOB_EXCEPTION_TERMINAL,    /* severity 0, non-alloc: job really ends here */
     JOB_EXCEPTION_ERROR = -1   /* bad context or resubmit_job() itself failed */
 };
+
+/*
+ * Context passed to the debug.start-request timer callback so it can send
+ * the `job-exec.override` start RPC after the timer fires.
+ */
+struct debug_start_ctx {
+    flux_plugin_t *p;
+    flux_jobid_t job_id;
+};
+
 /*
  * Callback firing when job has completed.
  */
@@ -491,6 +501,14 @@ static int priority_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *
             flux_log_error (h, "%s: %s", idf58 (d->id), errstr);
             goto error;
         }
+        if (flux_jobtap_jobspec_update_pack (p, "{s:i}", "attributes.system.exec.test.override", 1)
+                < 0
+            || flux_jobtap_job_set_flag (p, FLUX_JOBTAP_CURRENT_JOB, "debug") < 0) {
+            flux_log_error (h,
+                            "%s: failed to enable exec test override or set debug flag",
+                            idf58 (d->id));
+            goto error;
+        }
         return 0;
     }
     if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:o}", "jobspec", &jobspec) < 0
@@ -624,64 +642,192 @@ static int sched_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *arg
 }
 
 /*
- * job.state.run callback. Sends `job-exec.override` RPCs to make the job skip
- * execution, since execution is handled by another Flux instance.
+ * Continuation for the job-exec.override "finish" RPC. Logs an error if the
+ * RPC failed.
  */
-static int run_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
+static void override_finish_cb (flux_future_t *f, void *arg)
+{
+    struct debug_start_ctx *ctx = arg;
+    flux_t *h = flux_jobtap_get_flux (ctx->p);
+
+    /* On an RPC error response the error string is attached to the future,
+     * not returned as a payload, so use flux_future_error_string() */
+    if (flux_rpc_get (f, NULL) < 0) {
+        const char *errmsg = flux_future_error_string (f);
+        flux_log_error (h,
+                        "job-exec.override: finish rpc failed for %s: %s",
+                        idf58 (ctx->job_id),
+                        errmsg ? errmsg : strerror (errno));
+        flux_jobtap_raise_exception (ctx->p,
+                                     ctx->job_id,
+                                     "job-exec.override",
+                                     0,
+                                     "delegate: job-exec.override finish failed: %s",
+                                     errmsg ? errmsg : strerror (errno));
+    }
+
+    flux_future_destroy (f);
+    free (ctx);
+}
+
+/*
+ * Continuation for the job-exec.override "start" RPC. If the start RPC
+ * failed, log an error and stop; otherwise send the "finish" RPC.
+ */
+static void override_start_cb (flux_future_t *f, void *arg)
+{
+    struct debug_start_ctx *ctx = arg;
+    flux_t *h = flux_jobtap_get_flux (ctx->p);
+    flux_future_t *finish_future = NULL;
+    const char *reason;
+
+    /* On an RPC error response the error string is attached to the future,
+     * not returned as a payload, so use flux_future_error_string() */
+    if (flux_rpc_get (f, NULL) < 0) {
+        reason = flux_future_error_string (f);
+        reason = reason ? reason : strerror (errno);
+        flux_log_error (h,
+                        "job-exec.override: start rpc failed for %s: %s",
+                        idf58 (ctx->job_id),
+                        reason);
+        goto error;
+    }
+
+    if (!(finish_future = flux_rpc_pack (h,
+                                         "job-exec.override",
+                                         FLUX_NODEID_ANY,
+                                         0,
+                                         "{s:s s:I s:i}",
+                                         "event",
+                                         "finish",
+                                         "jobid",
+                                         ctx->job_id,
+                                         "status",
+                                         0))
+        || flux_future_then (finish_future, -1, override_finish_cb, ctx) < 0) {
+        reason = strerror (errno);
+        flux_log_error (h,
+                        "flux_rpc_pack failed for %s in job-exec.override: finish",
+                        idf58 (ctx->job_id));
+        goto error;
+    }
+    flux_future_destroy (f);
+    return;
+
+error:
+    flux_future_destroy (f);
+    flux_future_destroy (finish_future);
+    flux_jobtap_raise_exception (ctx->p,
+                                 ctx->job_id,
+                                 "job-exec.override",
+                                 0,
+                                 "delegate: job-exec.override start failed: %s",
+                                 reason);
+    free (ctx);
+}
+
+/*
+ * Timer callback for job.event.debug.start-request. Fires ~1 second after
+ * the debug start-request and sends the `job-exec.override` start RPC; the
+ * finish event is sent from the start continuation.
+ *
+ * The override RPC continuations may run after the job (and its
+ * job-owned ctx) has been destroyed, so hand them an independently
+ * allocated copy that they own and free when the chain completes.
+ */
+static void debug_start_timer_cb (flux_reactor_t *r, flux_watcher_t *w, int revents, void *arg)
+{
+    struct debug_start_ctx *ctx = arg, *ctx_copy = NULL;
+    flux_t *h = flux_jobtap_get_flux (ctx->p);
+    flux_future_t *override_future;
+
+    if (!(override_future = flux_rpc_pack (h,
+                                           "job-exec.override",
+                                           FLUX_NODEID_ANY,
+                                           0,
+                                           "{s:s s:I}",
+                                           "event",
+                                           "start",
+                                           "jobid",
+                                           ctx->job_id))
+        || !(ctx_copy = malloc (sizeof (struct debug_start_ctx)))
+        || flux_future_then (override_future, -1, override_start_cb, ctx_copy) < 0) {
+        flux_log_error (h,
+                        "flux_rpc_pack failed for %s job-exec.override: start",
+                        idf58 (ctx->job_id));
+        flux_future_destroy (override_future);
+        flux_jobtap_raise_exception (ctx->p,
+                                     ctx->job_id,
+                                     "job-exec.override",
+                                     0,
+                                     "delegate: failed starting job-exec.override");
+        free (ctx_copy);
+    } else {
+        ctx_copy->job_id = ctx->job_id;
+        ctx_copy->p = ctx->p;
+    }
+
+    flux_watcher_stop (w);
+}
+
+/*
+ * job.event.debug.start-request callback. Arms a 1-second timer that sends
+ * `job-exec.override` RPCs to make the job skip execution, since execution
+ * is handled by another Flux instance.
+ *
+ * The 1-second timer is because there is a race to start the exec bypass
+ * service.
+ */
+static int debug_start_request_cb (flux_plugin_t *p,
+                                   const char *topic,
+                                   flux_plugin_arg_t *args,
+                                   void *arg)
 {
     flux_t *h = flux_jobtap_get_flux (p);
-    flux_jobid_t job_id;
-    flux_future_t *run_future;
+    struct delegate_job_info *d;
+    struct debug_start_ctx *ctx;
+    flux_watcher_t *w = NULL;
+    const char *errmsg = "";
 
     if (!h)
         return -1;
 
-    if (!flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate"))
+    if (!(d = flux_jobtap_job_aux_get (p, FLUX_JOBTAP_CURRENT_JOB, "flux::delegate")))
         return 0;
 
-    if (flux_plugin_arg_unpack (args, FLUX_PLUGIN_ARG_IN, "{s:I}", "id", &job_id) < 0) {
-        flux_jobtap_raise_exception (p,
-                                     FLUX_JOBTAP_CURRENT_JOB,
-                                     "alloc",
-                                     0,
-                                     "delegate: unpack: %s",
-                                     flux_plugin_arg_strerror (args));
-        flux_log_error (h, "flux_plugin_arg_unpack");
-        return -1;
+    /* Defer the `job-exec.override` start RPC until a 1-second timer fires. */
+    if (!(ctx = calloc (1, sizeof (*ctx)))
+        || flux_jobtap_job_aux_set (p, FLUX_JOBTAP_CURRENT_JOB, NULL, ctx, free) < 0) {
+        free (ctx);
+        errmsg = "flux_jobtap_job_aux_set";
+        goto error;
     }
-    // send `job-exec.override` start and finish events. TODO: check the RPC
-    // return status and handle errors.
-    if (!(run_future = flux_rpc_pack (h,
-                                      "job-exec.override",
-                                      FLUX_NODEID_ANY,
-                                      0,
-                                      "{s:s s:I}",
-                                      "event",
-                                      "start",
-                                      "jobid",
-                                      job_id))) {
-        flux_log_error (h, "flux_rpc_pack failed for %s job-exec.override: start", idf58 (job_id));
-        return -1;
+    ctx->p = p;
+    ctx->job_id = d->id;
+
+    if (!(w = flux_timer_watcher_create (flux_get_reactor (h), 1., 0., debug_start_timer_cb, ctx))
+        || flux_jobtap_job_aux_set (p,
+                                    FLUX_JOBTAP_CURRENT_JOB,
+                                    "flux::job-exec-watcher-timer",
+                                    w,
+                                    (flux_free_f)flux_watcher_destroy)
+               < 0) {
+        flux_watcher_destroy (w);
+        errmsg = "flux_timer_watcher_create";
+        goto error;
     }
-    flux_future_destroy (run_future);
-    if (!(run_future = flux_rpc_pack (h,
-                                      "job-exec.override",
-                                      FLUX_NODEID_ANY,
-                                      0,
-                                      "{s:s s:I}",
-                                      "event",
-                                      "finish",
-                                      "jobid",
-                                      job_id))) {
-        flux_log_error (h,
-                        "flux_rpc_pack failed for %s in job-exec.override: "
-                        "finish",
-                        idf58 (job_id));
-        return -1;
-    }
-    flux_future_destroy (run_future);
+    flux_watcher_start (w);
 
     return 0;
+
+error:
+    flux_log_error (h, "%s: %s", idf58 (d->id), errmsg);
+    flux_jobtap_raise_exception (p,
+                                 FLUX_JOBTAP_CURRENT_JOB,
+                                 DELEGATION_FAILURE_EXCEPTION,
+                                 0,
+                                 errmsg);
+    return -1;
 }
 
 static int exception_cb (flux_plugin_t *p, const char *topic, flux_plugin_arg_t *args, void *arg)
@@ -740,8 +886,8 @@ static const struct flux_plugin_handler tab[] = {
     {"job.state.depend", depend_cb, NULL},
     {"job.state.priority", priority_cb, NULL},
     {"job.state.sched", sched_cb, NULL},
-    {"job.state.run", run_cb, NULL},
     {"job.event.exception", exception_cb, NULL},
+    {"job.event.debug.start-request", debug_start_request_cb, NULL},
     {0},
 };
 
