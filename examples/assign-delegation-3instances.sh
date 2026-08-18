@@ -46,7 +46,19 @@ TARGET1_URI="$(flux uri --remote "${TARGET1_ID}")"
 TARGET2_URI="$(flux uri --remote "${TARGET2_ID}")"
 
 printf '[3/5] Loading delegate configuration into the source instance...\n'
-printf 'delegate = [ "%s", "%s", "%s" ]\n' "${TARGET0_URI}" "${TARGET1_URI}" "${TARGET2_URI}" > "${CONFIG_FILE}"
+cat > "${CONFIG_FILE}" <<EOF
+[[delegate]]
+uri = "${TARGET0_URI}"
+label = "target0"
+
+[[delegate]]
+uri = "${TARGET1_URI}"
+label = "target1"
+
+[[delegate]]
+uri = "${TARGET2_URI}"
+label = "target2"
+EOF
 cat "${CONFIG_FILE}" | flux proxy "${SOURCE_INSTANCE}" flux config load
 flux proxy "${SOURCE_INSTANCE}" flux jobtap load "${PLUGIN_PATH}"
 

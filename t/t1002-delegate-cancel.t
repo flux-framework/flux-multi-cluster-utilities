@@ -21,8 +21,11 @@ test_expect_success 'start one target sub-instance' '
 
 test_expect_success 'configure delegate plugin with one target URI' '
 	uri_0=$(flux uri --local ${target_0}) &&
-	printf "delegate = [ \"%s\" ]\n" "${uri_0}"  |
-		flux config load && flux config get | jq -e .
+	cat <<-EOF | flux config load && flux config get | jq -e .
+	[[delegate]]
+	uri = "${uri_0}"
+	label = "target0"
+	EOF
 '
 
 test_expect_success 'plugin can be loaded' '

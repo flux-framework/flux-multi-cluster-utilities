@@ -5,12 +5,20 @@ static void free_uris (struct cluster_config *config)
 {
     size_t index;
 
-    if (!config || !config->uris)
+    if (!config)
         return;
-    for (index = 0; index < config->count; index++)
-        free (config->uris[index]);
-    free (config->uris);
-    config->uris = NULL;
+    if (config->uris) {
+        for (index = 0; index < config->count; index++)
+            free (config->uris[index]);
+        free (config->uris);
+        config->uris = NULL;
+    }
+    if (config->labels) {
+        for (index = 0; index < config->count; index++)
+            free (config->labels[index]);
+        free (config->labels);
+        config->labels = NULL;
+    }
     config->count = 0;
 }
 
@@ -26,8 +34,20 @@ struct cluster_config *copy_config (struct cluster_config *config)
     new_config->count = config->count;
     new_config->random_seeded = config->random_seeded;
 
+    if (new_config->count == 0) {
+        new_config->uris = NULL;
+        new_config->labels = NULL;
+        return new_config;
+    }
+
     if (!(new_config->uris = calloc (new_config->count, sizeof (char *)))) {
         flux_log_error (config->h, "calloc error, copy_config uris");
+        free (new_config);
+        return NULL;
+    }
+    if (!(new_config->labels = calloc (new_config->count, sizeof (char *)))) {
+        flux_log_error (config->h, "calloc error, copy_config labels");
+        free (new_config->uris);
         free (new_config);
         return NULL;
     }
@@ -37,6 +57,16 @@ struct cluster_config *copy_config (struct cluster_config *config)
             free_uris (new_config);
             free (new_config);
             return NULL;
+        }
+        if (config->labels && config->labels[i]) {
+            if (!(new_config->labels[i] = strdup (config->labels[i]))) {
+                flux_log_error (config->h, "strdup error, copy_config labels");
+                free_uris (new_config);
+                free (new_config);
+                return NULL;
+            }
+        } else {
+            new_config->labels[i] = NULL;
         }
     }
     return new_config;
@@ -49,9 +79,14 @@ int config_remove_uri (struct cluster_config *config, const char *uri)
     for (size_t i = 0, j = 0; i < config->count; i++) {
         if (!found && strcmp (config->uris[i], uri) == 0) {
             free (config->uris[i]);
+            if (config->labels && config->labels[i])
+                free (config->labels[i]);
             found = true;
         } else {
-            config->uris[j++] = config->uris[i];
+            config->uris[j] = config->uris[i];
+            if (config->labels)
+                config->labels[j] = config->labels[i];
+            j++;
         }
     }
     if (!found) {
@@ -59,6 +94,8 @@ int config_remove_uri (struct cluster_config *config, const char *uri)
         return -1;
     }
     config->uris[--config->count] = NULL;
+    if (config->labels)
+        config->labels[config->count] = NULL;
     return 0;
 }
 
@@ -89,23 +126,59 @@ int load_config (struct cluster_config *config)
     config->count = json_array_size (delegate);
     if (config->count == 0) {
         config->uris = NULL;
+        config->labels = NULL;
         return 0;
     }
     if (!(config->uris = calloc (config->count, sizeof (char *)))) {
         flux_log_error (config->h, "calloc");
         return -1;
     }
+    if (!(config->labels = calloc (config->count, sizeof (char *)))) {
+        flux_log_error (config->h, "calloc");
+        free (config->uris);
+        config->uris = NULL;
+        return -1;
+    }
 
     json_array_foreach (delegate, index, value) {
         const char *uri;
-        if (!json_is_string (value)) {
-            flux_log (config->h, LOG_ERR, "delegate array contains non-string");
+        const char *label = NULL;
+
+        /* Support both old format (string) and new format (object with uri/label) */
+        if (json_is_string (value)) {
+            /* Old format: delegate = [ "uri1", "uri2" ] */
+            uri = json_string_value (value);
+        } else if (json_is_object (value)) {
+            /* New format: delegate = [ { uri = "...", label = "..." } ] */
+            json_t *uri_obj = json_object_get (value, "uri");
+            json_t *label_obj = json_object_get (value, "label");
+
+            if (!uri_obj || !json_is_string (uri_obj)) {
+                flux_log (config->h, LOG_ERR, "delegate array object missing 'uri' field");
+                goto error;
+            }
+            uri = json_string_value (uri_obj);
+
+            if (label_obj && json_is_string (label_obj)) {
+                label = json_string_value (label_obj);
+            }
+        } else {
+            flux_log (config->h, LOG_ERR, "delegate array contains invalid element type");
             goto error;
         }
-        uri = json_string_value (value);
+
         if (!(config->uris[index] = strdup (uri))) {
             flux_log_error (config->h, "strdup");
             goto error;
+        }
+
+        if (label) {
+            if (!(config->labels[index] = strdup (label))) {
+                flux_log_error (config->h, "strdup");
+                goto error;
+            }
+        } else {
+            config->labels[index] = NULL;
         }
     }
 

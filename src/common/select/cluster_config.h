@@ -5,6 +5,7 @@
 struct cluster_config {
     flux_t *h;
     char **uris;        /* Array of cluster URIs */
+    char **labels;      /* Array of cluster labels (optional) */
     size_t count;       /* Number of clusters */
     bool random_seeded; /* Random seed initialized flag */
 };

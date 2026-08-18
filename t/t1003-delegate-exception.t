@@ -43,10 +43,19 @@ test_expect_success 'configure delegate plugin with three target URIs' '
 	uri_b=$(flux uri --local ${target_b}) &&
 	uri_c=$(flux uri --local ${target_c}) &&
 	uri_d=$(flux uri --local ${target_d}) &&
-	printf "delegate = [ \"%s\", \"%s\", \"%s\" ]\n" \
-		"${uri_b}" "${uri_c}" "${uri_d}" |
-		flux config load &&
-	flux config get | jq -e .
+	cat <<-EOF | flux config load && flux config get | jq -e .
+	[[delegate]]
+	uri = "${uri_b}"
+	label = "target_b"
+
+	[[delegate]]
+	uri = "${uri_c}"
+	label = "target_c"
+
+	[[delegate]]
+	uri = "${uri_d}"
+	label = "target_d"
+	EOF
 '
 test_expect_success 'plugin can be loaded' '
 	flux jobtap load "${SHARNESS_TEST_SRCDIR}"/../src/job-manager/plugins/.libs/delegate.so &&
