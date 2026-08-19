@@ -142,7 +142,8 @@ static int resubmit_job (flux_plugin_t *p, flux_jobid_t *id)
         || !d->delegate_policy || !d->clean_jobspec)
         return -1;
 
-    if (config_remove_uri (d->job_cluster_config, d->selected_uri) < 0 || submit_job (p, d) < 0) {
+    if (config_remove_instance (d->job_cluster_config, d->selected_uri) < 0
+        || submit_job (p, d) < 0) {
         flux_log_error (h, "%s Unable to resubmit job or change uri", idf58 (*id));
         return -1;
     }

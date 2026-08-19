@@ -23,10 +23,11 @@ test_expect_success 'start subinstance for delegation' '
 
 test_expect_success 'configure flux with subinstance for delegation' '
 	URI=$(flux uri --local ${subinstance}) &&
-	echo "
-delegate = [ \"${URI}\" ]
-	" | flux config load &&
-	flux config get | jq -e .
+	cat <<-EOF | flux config load && flux config get | jq -e .
+	[[delegate]]
+	uri = "${URI}"
+	label = "target0"
+	EOF
 '
 
 test_expect_success 'plugin can be loaded' '
